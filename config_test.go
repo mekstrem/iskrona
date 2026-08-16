@@ -1,0 +1,120 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestSaveAndLoadConfig(t *testing.T) {
+	dir := t.TempDir()
+	marketlogs := filepath.Join(dir, "marketlogs")
+	if err := os.Mkdir(marketlogs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "nested", "config.toml")
+	want := Config{Market: MarketConfig{Marketlogs: marketlogs, MaxJumps: 7}, Fees: FeeConfig{Broker: 0.025, SalesTax: 0.011}, Display: DisplayConfig{CopyMode: "sell", Color: true}}
+	if err := SaveConfig(path, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("loaded config = %#v, want %#v", got, want)
+	}
+}
+
+func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[market]\nmax_jumps = 1\nunknown = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("LoadConfig error = %v, want unknown-key error", err)
+	}
+}
+
+func TestLoadConfigMigratesLegacyFlatFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	legacy := "marketlogs = \"/tmp/marketlogs\"\njumps = 4\nbroker_fee = 0.03\nsales_tax = 0.02\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Market.Marketlogs != "/tmp/marketlogs" || c.Market.MaxJumps != 4 || c.Fees.Broker != 0.03 || c.Fees.SalesTax != 0.02 {
+		t.Fatalf("migrated config = %#v", c)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "[market]") || !strings.Contains(string(data), "max_jumps = 4") {
+		t.Fatalf("config was not rewritten in the new schema: %s", data)
+	}
+}
+
+func TestResolveConfigAppliesExplicitZeroJumpOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SaveConfig(path, Config{Market: MarketConfig{Marketlogs: dir, MaxJumps: 12}, Fees: FeeConfig{Broker: 0.02, SalesTax: 0.01}, Display: DisplayConfig{CopyMode: "sell", Color: true}}); err != nil {
+		t.Fatal(err)
+	}
+	jumps := 0
+	cfg, err := ResolveConfig(path, CLIOverrides{Jumps: &jumps})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Market.MaxJumps != 0 {
+		t.Fatalf("max jumps = %d, want 0", cfg.Market.MaxJumps)
+	}
+}
+
+func TestResolveConfigPathOverride(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := SaveConfig(path, Config{Market: MarketConfig{Marketlogs: dir}, Fees: FeeConfig{Broker: 0.02, SalesTax: 0.01}, Display: DisplayConfig{CopyMode: "sell", Color: true}}); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(dir, "other")
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ResolveConfig(path, CLIOverrides{Path: &other})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Market.Marketlogs != other {
+		t.Fatalf("marketlogs = %q, want %q", cfg.Market.Marketlogs, other)
+	}
+}
+
+func TestResolveConfigRequiresMarketlogsDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := SaveConfig(path, DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ResolveConfig(path, CLIOverrides{})
+	if err == nil || !strings.Contains(err.Error(), "marketlogs") {
+		t.Fatalf("ResolveConfig error = %v, want marketlogs error", err)
+	}
+}
+
+func TestConfigValidateFees(t *testing.T) {
+	for _, cfg := range []Config{
+		{Fees: FeeConfig{Broker: -0.1}},
+		{Fees: FeeConfig{SalesTax: 1}},
+		{Fees: FeeConfig{Broker: 0.7, SalesTax: 0.3}},
+		{Market: MarketConfig{MaxJumps: -1}},
+	} {
+		if err := cfg.Validate(false); err == nil {
+			t.Fatalf("Validate(%#v) succeeded, want error", cfg)
+		}
+	}
+}
