@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,5 +50,46 @@ func TestScanDirectoryIgnoresNonTextAndDirectories(t *testing.T) {
 	}
 	if len(files) != 0 {
 		t.Fatalf("files = %#v, want empty", files)
+	}
+}
+
+func TestWatchDirectoryRetriesRetryableCallbackError(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	attempts := make(chan int, 2)
+	done := make(chan error, 1)
+	go func() {
+		count := 0
+		done <- WatchDirectory(ctx, dir, func(string) error {
+			count++
+			attempts <- count
+			if count == 1 {
+				return errRetryFile
+			}
+			cancel()
+			return nil
+		})
+	}()
+
+	// Let WatchDirectory establish its initial baseline before creating the
+	// export, matching the documented behavior that existing files are ignored.
+	time.Sleep(300 * time.Millisecond)
+	if err := os.WriteFile(filepath.Join(dir, "retry.txt"), []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for want := 1; want <= 2; want++ {
+		select {
+		case got := <-attempts:
+			if got != want {
+				t.Fatalf("attempt = %d, want %d", got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for attempt %d", want)
+		}
+	}
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("WatchDirectory error = %v", err)
 	}
 }

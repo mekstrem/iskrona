@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+var errRetryFile = errors.New("retry market export")
 
 type fileSignature struct {
 	size    int64
@@ -59,6 +62,10 @@ func WatchDirectory(ctx context.Context, dir string, onFile func(string) error) 
 				state.stable++
 				if state.stable >= 2 {
 					if err := onFile(path); err != nil {
+						if errors.Is(err, errRetryFile) {
+							pending[path] = state
+							continue
+						}
 						return fmt.Errorf("process %s: %w", filepath.Base(path), err)
 					}
 					processed[path] = signature

@@ -57,7 +57,7 @@ type eveClient struct {
 }
 
 func newEVEClient() *eveClient {
-	return &eveClient{httpClient: http.DefaultClient, store: systemCredentialStore{}, openBrowser: openBrowser, loginTimeout: 2 * time.Minute}
+	return &eveClient{httpClient: &http.Client{Timeout: 30 * time.Second}, store: systemCredentialStore{}, openBrowser: openBrowser, loginTimeout: 2 * time.Minute}
 }
 
 func newLoginCmd() *cobra.Command {
@@ -303,6 +303,8 @@ func (c *eveClient) authorize(ctx context.Context) (eveToken, eveCharacter, erro
 	if err := c.openBrowser(u.String()); err != nil {
 		return eveToken{}, eveCharacter{}, fmt.Errorf("open EVE login in browser: %w", err)
 	}
+	loginTimer := time.NewTimer(c.loginTimeout)
+	defer loginTimer.Stop()
 	select {
 	case result := <-callback:
 		if result.err != nil {
@@ -325,8 +327,10 @@ func (c *eveClient) authorize(ctx context.Context) (eveToken, eveCharacter, erro
 		}
 		character, err := characterFromJWT(token.AccessToken)
 		return token, character, err
-	case <-time.After(c.loginTimeout):
+	case <-loginTimer.C:
 		return eveToken{}, eveCharacter{}, errors.New("EVE login timed out")
+	case <-ctx.Done():
+		return eveToken{}, eveCharacter{}, ctx.Err()
 	}
 }
 

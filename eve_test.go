@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +176,247 @@ func TestLoginTokenRefreshesSavedAuthorization(t *testing.T) {
 	}
 }
 
+func TestLoginPersistsDerivedFeesAuthorizationAndOutput(t *testing.T) {
+	configPath := useIsolatedUserConfigDir(t)
+	initial := DefaultConfig()
+	initial.Market.MaxJumps = 7
+	initial.EVE = EVEConfig{CharacterID: 42, CharacterName: "Old name"}
+	if err := SaveConfig(configPath, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	oldAPI, oldToken := eveAPIBase, eveSSOToken
+	defer func() { eveAPIBase, eveSSOToken = oldAPI, oldToken }()
+	eveAPIBase, eveSSOToken = "https://esi.test/latest", "https://sso.test/token"
+	store := memoryCredentialStore{"iskrona/eve-refresh-token-42": "old-refresh"}
+	c := &eveClient{store: store, httpClient: &http.Client{Transport: roundTripper(func(r *http.Request) *http.Response {
+		switch r.URL.String() {
+		case "https://esi.test/latest/universe/stations/60003760/":
+			return jsonResponse(http.StatusOK, `{"name":"Jita IV - Moon 4 - Caldari Navy Assembly Plant","owner":1000035,"race_id":1}`)
+		case "https://sso.test/token":
+			return jsonResponse(http.StatusOK, `{"access_token":"access","refresh_token":"new-refresh"}`)
+		case "https://esi.test/latest/characters/42/skills/":
+			if r.Header.Get("Authorization") != "Bearer access" {
+				t.Fatalf("skills authorization = %q", r.Header.Get("Authorization"))
+			}
+			return jsonResponse(http.StatusOK, `{"skills":[{"skill_id":16622,"current_skill_level":5},{"skill_id":3446,"current_skill_level":5}]}`)
+		case "https://esi.test/latest/characters/42/standings/":
+			return jsonResponse(http.StatusOK, `[{"from_id":1000035,"from_type":"npc_corp","standing":10},{"from_id":500001,"from_type":"faction","standing":10}]`)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
+			return nil
+		}
+	})}, openBrowser: func(string) error { t.Fatal("browser should not open"); return nil }}
+
+	var out strings.Builder
+	if err := c.login(context.Background(), &out, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.EVE.CharacterID != 42 || got.EVE.CharacterName != "Old name" || got.EVE.StationID != jita44ID || got.EVE.StationName != jita44Name {
+		t.Fatalf("saved EVE config = %#v", got.EVE)
+	}
+	if math.Abs(got.Fees.Broker-.01) > 1e-9 || math.Abs(got.Fees.SalesTax-.03375) > 1e-9 {
+		t.Fatalf("saved fees = %#v", got.Fees)
+	}
+	if got.Market.MaxJumps != 7 {
+		t.Fatalf("unrelated config changed: %#v", got.Market)
+	}
+	if store["iskrona/eve-refresh-token-42"] != "new-refresh" {
+		t.Fatalf("saved refresh token = %q", store["iskrona/eve-refresh-token-42"])
+	}
+	for _, want := range []string{"EVE fees updated", "Character: Old name", "Station: " + jita44Name, "Accounting: 5", "Broker Relations: 5", "Broker fee: 1.000%", "Sales tax: 3.375%"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestLoginDoesNotPersistConfigWhenCredentialSaveFails(t *testing.T) {
+	configPath := useIsolatedUserConfigDir(t)
+	initial := DefaultConfig()
+	initial.EVE = EVEConfig{CharacterID: 42, CharacterName: "Mikko"}
+	if err := SaveConfig(configPath, initial); err != nil {
+		t.Fatal(err)
+	}
+	oldAPI, oldToken := eveAPIBase, eveSSOToken
+	defer func() { eveAPIBase, eveSSOToken = oldAPI, oldToken }()
+	eveAPIBase, eveSSOToken = "https://esi.test/latest", "https://sso.test/token"
+	storeErr := errors.New("credential store unavailable")
+	store := &recordingCredentialStore{values: map[string]string{"iskrona/eve-refresh-token-42": "old-refresh"}, setErr: storeErr}
+	c := &eveClient{store: store, httpClient: &http.Client{Transport: roundTripper(func(r *http.Request) *http.Response {
+		switch r.URL.Path {
+		case "/latest/universe/stations/60003760/":
+			return jsonResponse(http.StatusOK, `{"name":"Jita IV - Moon 4 - Caldari Navy Assembly Plant","owner":1000035,"race_id":1}`)
+		case "/token":
+			return jsonResponse(http.StatusOK, `{"access_token":"access","refresh_token":"new-refresh"}`)
+		case "/latest/characters/42/skills/":
+			return jsonResponse(http.StatusOK, `{"skills":[]}`)
+		case "/latest/characters/42/standings/":
+			return jsonResponse(http.StatusOK, `[]`)
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+			return nil
+		}
+	})}}
+	if err := c.login(context.Background(), io.Discard, ""); err == nil || !strings.Contains(err.Error(), storeErr.Error()) {
+		t.Fatalf("login error = %v", err)
+	}
+	got, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != initial {
+		t.Fatalf("config changed after credential failure: got %#v, want %#v", got, initial)
+	}
+}
+
+func TestLogoutDeletesCredentialAndClearsOnlyEVEMetadata(t *testing.T) {
+	configPath := useIsolatedUserConfigDir(t)
+	want := DefaultConfig()
+	want.Market.MaxJumps = 9
+	want.Fees = FeeConfig{Broker: .025, SalesTax: .035}
+	want.EVE = EVEConfig{CharacterID: 42, CharacterName: "Mikko", StationID: jita44ID, StationName: jita44Name}
+	if err := SaveConfig(configPath, want); err != nil {
+		t.Fatal(err)
+	}
+	store := &recordingCredentialStore{values: map[string]string{"iskrona/eve-refresh-token-42": "refresh"}}
+	c := &eveClient{store: store}
+	var out strings.Builder
+	if err := c.logout(&out); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.deleted) != 1 || store.deleted[0] != "iskrona/eve-refresh-token-42" {
+		t.Fatalf("deleted credentials = %#v", store.deleted)
+	}
+	got, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want.EVE = EVEConfig{}
+	if got != want {
+		t.Fatalf("config after logout = %#v, want %#v", got, want)
+	}
+	if out.String() != "EVE authorization removed\n" {
+		t.Fatalf("logout output = %q", out.String())
+	}
+}
+
+func TestLogoutCredentialFailurePreservesConfig(t *testing.T) {
+	configPath := useIsolatedUserConfigDir(t)
+	want := DefaultConfig()
+	want.EVE = EVEConfig{CharacterID: 42, CharacterName: "Mikko"}
+	if err := SaveConfig(configPath, want); err != nil {
+		t.Fatal(err)
+	}
+	storeErr := errors.New("delete denied")
+	c := &eveClient{store: &recordingCredentialStore{deleteErr: storeErr}}
+	if err := c.logout(io.Discard); err == nil || !strings.Contains(err.Error(), storeErr.Error()) {
+		t.Fatalf("logout error = %v", err)
+	}
+	got, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("config changed after delete failure: got %#v, want %#v", got, want)
+	}
+}
+
+func TestNewEVEClientUsesFiniteHTTPTimeout(t *testing.T) {
+	c := newEVEClient()
+	if c.httpClient.Timeout <= 0 {
+		t.Fatalf("HTTP timeout = %s, want a finite timeout", c.httpClient.Timeout)
+	}
+}
+
+func TestAuthorizeStopsWhenContextIsCanceled(t *testing.T) {
+	oldAuthorize := eveSSOAuthorize
+	defer func() { eveSSOAuthorize = oldAuthorize }()
+	eveSSOAuthorize = "https://sso.test/authorize"
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &eveClient{httpClient: &http.Client{}, loginTimeout: time.Minute, openBrowser: func(string) error {
+		cancel()
+		return nil
+	}}
+	started := time.Now()
+	_, _, err := c.authorize(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("authorize error = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("authorize took %s after cancellation", elapsed)
+	}
+}
+
+func TestRefreshRejectsHTTPAndPayloadFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *http.Response
+		want string
+	}{
+		{"non-2xx", jsonResponse(http.StatusUnauthorized, `{}`), "refresh EVE authorization: 401 test"},
+		{"malformed json", jsonResponse(http.StatusOK, `{`), "unexpected EOF"},
+		{"missing refresh token", jsonResponse(http.StatusOK, `{"access_token":"access"}`), "response has no refresh token"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &eveClient{httpClient: &http.Client{Transport: roundTripper(func(*http.Request) *http.Response { return tc.resp })}}
+			_, err := c.refresh(context.Background(), "old")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("refresh error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRequestJSONSetsHeadersAndReportsFailures(t *testing.T) {
+	c := &eveClient{httpClient: &http.Client{Transport: roundTripper(func(r *http.Request) *http.Response {
+		if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" || r.Header.Get("Authorization") != "Bearer token" {
+			t.Fatalf("request = %s, headers = %v", r.Method, r.Header)
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != `{"name":"Jita"}` {
+			t.Fatalf("body = %q", data)
+		}
+		return jsonResponse(http.StatusBadGateway, `{}`)
+	})}}
+	var destination map[string]any
+	err := c.requestJSON(context.Background(), http.MethodPost, "https://esi.test/endpoint", []byte(`{"name":"Jita"}`), "token", &destination)
+	if err == nil || !strings.Contains(err.Error(), "502 test") {
+		t.Fatalf("requestJSON error = %v", err)
+	}
+
+	c.httpClient.Transport = roundTripper(func(*http.Request) *http.Response { return jsonResponse(http.StatusOK, `{`) })
+	if err := c.requestJSON(context.Background(), http.MethodGet, "https://esi.test/endpoint", nil, "", &destination); err == nil {
+		t.Fatal("requestJSON accepted malformed JSON")
+	}
+}
+
+func TestCharacterFromJWTRejectsMalformedClaims(t *testing.T) {
+	encode := func(payload string) string {
+		return "x." + base64.RawURLEncoding.EncodeToString([]byte(payload)) + ".y"
+	}
+	tests := []string{
+		"not-a-jwt",
+		"x.%%%.y",
+		encode(`{`),
+		encode(`{"sub":"CHARACTER:EVE"}`),
+		encode(`{"sub":"CHARACTER:EVE:not-a-number"}`),
+	}
+	for _, token := range tests {
+		if _, err := characterFromJWT(token); err == nil {
+			t.Errorf("characterFromJWT(%q) succeeded, want error", token)
+		}
+	}
+}
+
 type roundTripper func(*http.Request) *http.Response
 
 func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r), nil }
@@ -197,4 +440,53 @@ func (s memoryCredentialStore) Get(service, user string) (string, error) {
 func (s memoryCredentialStore) Delete(service, user string) error {
 	delete(s, service+"/"+user)
 	return nil
+}
+
+type recordingCredentialStore struct {
+	values    map[string]string
+	setErr    error
+	deleteErr error
+	deleted   []string
+}
+
+func (s *recordingCredentialStore) Set(service, user, password string) error {
+	if s.setErr != nil {
+		return s.setErr
+	}
+	if s.values == nil {
+		s.values = make(map[string]string)
+	}
+	s.values[service+"/"+user] = password
+	return nil
+}
+func (s *recordingCredentialStore) Get(service, user string) (string, error) {
+	value, ok := s.values[service+"/"+user]
+	if !ok {
+		return "", keyring.ErrNotFound
+	}
+	return value, nil
+}
+func (s *recordingCredentialStore) Delete(service, user string) error {
+	key := service + "/" + user
+	s.deleted = append(s.deleted, key)
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	delete(s.values, key)
+	return nil
+}
+
+func useIsolatedUserConfigDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("APPDATA", dir)
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "iskrona", "config.toml")
+	if path != want {
+		t.Fatalf("ConfigPath = %q, want %q", path, want)
+	}
+	return path
 }

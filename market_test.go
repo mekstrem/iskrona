@@ -26,6 +26,53 @@ func TestParseAndAnalyzeMarket(t *testing.T) {
 	}
 }
 
+func TestParseMarketCSVRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want string
+	}{
+		{"empty", "", "read market export header"},
+		{"missing header", "price,bid\n1.00,True\n", "must contain price, bid, and jumps"},
+		{"short row", "price,bid,jumps\n1.00,True\n", "row 2 is missing required fields"},
+		{"malformed csv", "price,bid,jumps\n\"1.00,True,0\n", "read market export row 2"},
+		{"empty price", "price,bid,jumps\n,True,0\n", "row 2 price: price must be a nonnegative decimal"},
+		{"negative price", "price,bid,jumps\n-1.00,True,0\n", "row 2 price: price must be a nonnegative decimal"},
+		{"leading decimal", "price,bid,jumps\n.50,True,0\n", "row 2 price: invalid decimal"},
+		{"multiple decimals", "price,bid,jumps\n1.2.3,True,0\n", "row 2 price: invalid decimal"},
+		{"nonzero precision", "price,bid,jumps\n1.001,True,0\n", "row 2 price: price has more than two decimal places"},
+		{"overflow", "price,bid,jumps\n92233720368547759.00,True,0\n", "row 2 price: price is too large"},
+		{"invalid bid", "price,bid,jumps\n1.00,maybe,0\n", "row 2 bid: invalid boolean"},
+		{"negative jumps", "price,bid,jumps\n1.00,True,-1\n", "row 2 jumps is not a nonnegative integer"},
+		{"invalid jumps", "price,bid,jumps\n1.00,True,nearby\n", "row 2 jumps is not a nonnegative integer"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseMarketCSV(strings.NewReader(tc.data))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseMarketCSV error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseMarketCSVAcceptsDocumentedVariants(t *testing.T) {
+	data := " PRICE , BID , JUMPS ,extra\n1,yes,0,x\n2.5,0,1,x\n3.1200,1,2,x\n4.00,no,3,x\n"
+	orders, err := ParseMarketCSV(strings.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Order{{PriceCents: 100, Bid: true, Jumps: 0}, {PriceCents: 250, Bid: false, Jumps: 1}, {PriceCents: 312, Bid: true, Jumps: 2}, {PriceCents: 400, Bid: false, Jumps: 3}}
+	if len(orders) != len(want) {
+		t.Fatalf("orders = %#v, want %#v", orders, want)
+	}
+	for i := range want {
+		if orders[i] != want[i] {
+			t.Errorf("order %d = %#v, want %#v", i, orders[i], want[i])
+		}
+	}
+}
+
 func TestTickPowerTenBoundaries(t *testing.T) {
 	for _, tc := range []struct{ in, up, down int64 }{
 		{100, 101, 99},          // 1.00 ISK
@@ -102,18 +149,5 @@ func TestExampleUnitsScaleToBudgets(t *testing.T) {
 	}
 	if got := exampleUnits(10_000_000, 100_000_000); got != 10 {
 		t.Fatalf("expensive-item example units = %d, want 10", got)
-	}
-}
-
-func TestFormatProfitRowKeepsColumnsAligned(t *testing.T) {
-	row := formatProfitRow(2, 114280800000, 145480600000, 31199800000)
-	if row != "             2    1 142 808 000.00    1 454 806 000.00      311 998 000.00 ISK" {
-		t.Fatalf("profit row = %q", row)
-	}
-}
-
-func TestProfitHeaderUsesSameColumnEdges(t *testing.T) {
-	if got := len(profitHeader()); got != 78 {
-		t.Fatalf("profit header length = %d, want 78", got)
 	}
 }

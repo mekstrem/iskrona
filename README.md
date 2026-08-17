@@ -20,14 +20,14 @@ Prebuilt releases are available for Windows, macOS, and Linux on amd64 and arm64
 
 1. In EVE Online, open a market item and use the market-export action to create a `.txt` export in the EVE `Marketlogs` folder.
 2. Run `iskrona setup`. The command creates a configuration file and automatically selects the standard EVE Marketlogs folder when it exists.
-3. If the folder was not detected, set `market.marketlogs` in the printed config path, or pass `--path DIR` when running `watch`.
+3. If the folder was not detected, set `market.marketlogs` in the printed config path, or pass `--path DIR` when running `tui`.
 4. Start watching for new exports:
 
 ```text
-iskrona watch --copy sell
+iskrona tui --copy sell
 ```
 
-`watch` ignores existing files when it starts and prints a snapshot for each new, stable `.txt` export. Press `Ctrl+C` to stop it.
+`tui` ignores existing files when it starts and updates Market Relay for each new, stable `.txt` export. Press `Ctrl+C` to stop it.
 
 ## Commands
 
@@ -35,7 +35,7 @@ iskrona watch --copy sell
 iskrona setup
 iskrona login [--station NAME_OR_ID]
 iskrona logout
-iskrona watch [--path DIR] [--jumps N] [--copy buy|sell] [--no-color]
+iskrona tui [--path DIR] [--jumps N] [--copy buy|sell] [--no-color]
 iskrona inspect --path export.txt
 iskrona version
 ```
@@ -43,7 +43,8 @@ iskrona version
 - `setup` creates or displays the configuration location.
 - `login` opens EVE SSO and populates the broker fee and sales tax from the selected character. It models Jita 4-4 by default; use `--station` for another NPC station.
 - `logout` removes the EVE authorization from the operating system credential store.
-- `watch` monitors a Marketlogs directory and calculates buy, sell, margin, and profit examples.
+- `tui` opens the interactive Market Relay dashboard and monitors a Marketlogs directory for buy, sell, margin, and profit recommendations. It requires an interactive terminal.
+- `watch` remains available as a deprecated compatibility alias for `tui`.
 - `inspect` validates and counts the orders in one export without starting the watcher.
 - Run `iskrona --help` or `iskrona COMMAND --help` for the generated command reference.
 
@@ -77,10 +78,10 @@ ISKrona reads only your Accounting and Broker Relations skills plus NPC corporat
 
 ## Clipboard and troubleshooting
 
-With `--copy buy` or `--copy sell`, ISKrona copies the selected recommendation when it processes an export. If clipboard access is unavailable, analysis continues and a warning is printed.
+With `--copy buy` or `--copy sell`, ISKrona copies the selected recommendation when it processes an export. If clipboard initialization is unavailable, analysis continues and Market Relay shows auto-copy as disabled. Clipboard writes are best-effort because the underlying clipboard API does not report runtime write failures.
 
-- **`market.marketlogs is empty`**: run `iskrona setup` and set the Marketlogs path, or use `iskrona watch --path DIR`.
-- **No output for an export**: start `watch` before creating the new `.txt` export; files already in the directory are intentionally ignored.
+- **`market.marketlogs is empty`**: run `iskrona setup` and set the Marketlogs path, or use `iskrona tui --path DIR`.
+- **No output for an export**: start `tui` before creating the new `.txt` export; files already in the directory are intentionally ignored.
 - **Invalid export error**: verify the export has `price`, `bid`, and `jumps` columns.
 
 ## Contributing and support

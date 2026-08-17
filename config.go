@@ -10,6 +10,8 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+var replaceConfigFile = atomicReplaceFile
+
 type Config struct {
 	Market  MarketConfig  `toml:"market"`
 	Fees    FeeConfig     `toml:"fees"`
@@ -112,21 +114,24 @@ func LoadConfig(path string) (Config, error) {
 		}
 		c := DefaultConfig()
 		meta, de := toml.NewDecoder(bytes.NewReader(data)).Decode(&c)
-		if de != nil && len(bytes.TrimSpace(data)) > 0 && bytes.TrimSpace(data)[0] != '[' {
-			defaults := DefaultConfig()
-			legacy := legacyConfig{BrokerFee: defaults.Fees.Broker, SalesTax: defaults.Fees.SalesTax}
-			legacyMeta, legacyErr := toml.NewDecoder(bytes.NewReader(data)).Decode(&legacy)
-			if legacyErr == nil && len(legacyMeta.Undecoded()) == 0 {
-				c.Market.Marketlogs = legacy.Marketlogs
-				c.Market.MaxJumps = legacy.Jumps
-				c.Fees.Broker = legacy.BrokerFee
-				c.Fees.SalesTax = legacy.SalesTax
-				if saveErr := SaveConfig(path, c); saveErr != nil {
-					return Config{}, fmt.Errorf("migrate config %s: %w", path, saveErr)
+		if de != nil {
+			if len(bytes.TrimSpace(data)) > 0 && bytes.TrimSpace(data)[0] != '[' {
+				defaults := DefaultConfig()
+				legacy := legacyConfig{BrokerFee: defaults.Fees.Broker, SalesTax: defaults.Fees.SalesTax}
+				legacyMeta, legacyErr := toml.NewDecoder(bytes.NewReader(data)).Decode(&legacy)
+				if legacyErr == nil && len(legacyMeta.Undecoded()) == 0 {
+					c.Market.Marketlogs = legacy.Marketlogs
+					c.Market.MaxJumps = legacy.Jumps
+					c.Fees.Broker = legacy.BrokerFee
+					c.Fees.SalesTax = legacy.SalesTax
+					if saveErr := SaveConfig(path, c); saveErr != nil {
+						return Config{}, fmt.Errorf("migrate config %s: %w", path, saveErr)
+					}
+					return c, nil
 				}
-				return c, nil
+				return Config{}, fmt.Errorf("decode config %s: %w (legacy: %v)", path, de, legacyErr)
 			}
-			return Config{}, fmt.Errorf("decode config %s: %w (legacy: %v)", path, de, legacyErr)
+			return Config{}, fmt.Errorf("decode config %s: %w", path, de)
 		}
 		if u := meta.Undecoded(); len(u) > 0 {
 			return Config{}, fmt.Errorf("decode config %s: unknown key %q", path, u[0].String())
@@ -161,13 +166,29 @@ func SaveConfig(path string, c Config) error {
 	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return e
 	}
-	f, e := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	f, e := os.CreateTemp(filepath.Dir(path), ".config-*.toml")
 	if e != nil {
-		return fmt.Errorf("open config %s: %w", path, e)
+		return fmt.Errorf("create temporary config for %s: %w", path, e)
 	}
-	defer f.Close()
+	tempPath := f.Name()
+	defer os.Remove(tempPath)
+	if e = f.Chmod(0600); e != nil {
+		f.Close()
+		return fmt.Errorf("secure temporary config %s: %w", path, e)
+	}
 	if e = toml.NewEncoder(f).Encode(c); e != nil {
+		f.Close()
 		return fmt.Errorf("encode config %s: %w", path, e)
+	}
+	if e = f.Sync(); e != nil {
+		f.Close()
+		return fmt.Errorf("sync config %s: %w", path, e)
+	}
+	if e = f.Close(); e != nil {
+		return fmt.Errorf("close config %s: %w", path, e)
+	}
+	if e = replaceConfigFile(tempPath, path); e != nil {
+		return fmt.Errorf("replace config %s: %w", path, e)
 	}
 	return nil
 }
