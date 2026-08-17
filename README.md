@@ -1,20 +1,52 @@
 # ISKrona
 
-ISKrona is a focused Go market assistant for EVE Online. It watches exported market data, turns the current order book into practical buy and sell recommendations, estimates margin, and optionally copies one recommendation to the clipboard.
+ISKrona is a focused Go market assistant for EVE Online. It watches exported market data, turns the current order book into practical buy and sell recommendations, estimates margin, and can copy a recommendation to the clipboard.
 
-## Workflow
+## Install
+
+Download the archive for your operating system and CPU from [Releases](../../releases), extract it, and place the `iskrona` executable somewhere on your `PATH`.
+
+Alternatively, build from source with Go 1.24 or later:
+
+```text
+git clone https://github.com/mekstrem/iskrona.git
+cd iskrona
+go build .
+```
+
+Prebuilt releases are available for Windows, macOS, and Linux on amd64 and arm64.
+
+## Quick start
+
+1. In EVE Online, open a market item and use the market-export action to create a `.txt` export in the EVE `Marketlogs` folder.
+2. Run `iskrona setup`. The command creates a configuration file and automatically selects the standard EVE Marketlogs folder when it exists.
+3. If the folder was not detected, set `market.marketlogs` in the printed config path, or pass `--path DIR` when running `watch`.
+4. Start watching for new exports:
+
+```text
+iskrona watch --copy sell
+```
+
+`watch` ignores existing files when it starts and prints a snapshot for each new, stable `.txt` export. Press `Ctrl+C` to stop it.
+
+## Commands
 
 ```text
 iskrona setup
-iskrona watch --copy sell
+iskrona watch [--path DIR] [--jumps N] [--copy buy|sell] [--no-color]
 iskrona inspect --path export.txt
+iskrona version
 ```
 
-`watch` monitors the configured folder and prints a readable market snapshot whenever a new export arrives. `inspect` validates and counts a single export without starting the watcher.
+- `setup` creates or displays the configuration location.
+- `watch` monitors a Marketlogs directory and calculates buy, sell, margin, and profit examples.
+- `inspect` validates and counts the orders in one export without starting the watcher.
+
+ISKrona reads the `price`, `bid`, and `jumps` columns, so extra columns and column ordering in an EVE export do not matter.
 
 ## Configuration
 
-The first run creates a platform-specific `iskrona/config.toml`:
+The configuration is stored in your platform-specific user config directory as `iskrona/config.toml`:
 
 ```toml
 [market]
@@ -30,7 +62,19 @@ copy_mode = "sell"
 color = true
 ```
 
-Use `iskrona watch --path DIR`, `--jumps N`, `--copy buy|sell`, or `--no-color` for per-run changes. ISKrona reads the `price`, `bid`, and `jumps` columns from EVE exports and applies its own four-significant-figure recommendation rules.
+`max_jumps` limits the market distance considered. Fee values are decimal fractions: `0.02` means 2%. Per-run options override the corresponding saved settings.
+
+## Clipboard and troubleshooting
+
+With `--copy buy` or `--copy sell`, ISKrona copies the selected recommendation when it processes an export. If clipboard access is unavailable, analysis continues and a warning is printed.
+
+- **`market.marketlogs is empty`**: run `iskrona setup` and set the Marketlogs path, or use `iskrona watch --path DIR`.
+- **No output for an export**: start `watch` before creating the new `.txt` export; files already in the directory are intentionally ignored.
+- **Invalid export error**: verify the export has `price`, `bid`, and `jumps` columns.
+
+## Contributing and support
+
+Bug reports and feature requests belong in [GitHub Issues](../../issues). Please read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
 ## Development
 
@@ -40,4 +84,6 @@ go vet ./...
 go build .
 ```
 
-ISKrona is an independently implemented Go application for EVE market data. It is not affiliated with EVE Online or other market tools.
+## License and disclaimer
+
+ISKrona is released under the [MIT License](LICENSE). It is an independent project and is not affiliated with, endorsed by, or sponsored by CCP Games. EVE Online and related marks are the property of CCP Games.

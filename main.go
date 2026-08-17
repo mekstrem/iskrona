@@ -13,7 +13,9 @@ import (
 	"strings"
 )
 
-const version = "0.2.0"
+// version is set to the release tag by the release workflow. Local builds use
+// the current development version.
+var version = "0.2.0"
 
 func main() { os.Exit(run(os.Args[1:])) }
 func run(args []string) int {
