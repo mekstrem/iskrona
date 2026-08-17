@@ -41,6 +41,7 @@ iskrona version
 - `setup` creates or displays the configuration location.
 - `watch` monitors a Marketlogs directory and calculates buy, sell, margin, and profit examples.
 - `inspect` validates and counts the orders in one export without starting the watcher.
+- Run `iskrona --help` or `iskrona COMMAND --help` for the generated command reference.
 
 ISKrona reads the `price`, `bid`, and `jumps` columns, so extra columns and column ordering in an EVE export do not matter.
 

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"math"
@@ -11,143 +10,171 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 // version is set to the release tag by the release workflow. Local builds use
 // the current development version.
 var version = "0.2.0"
 
-func main() { os.Exit(run(os.Args[1:])) }
-func run(args []string) int {
-	printBanner(os.Stdout)
-	if len(args) == 0 {
-		printUsage(os.Stdout)
-		return 2
-	}
-	switch args[0] {
-	case "help", "-h", "--help":
-		printUsage(os.Stdout)
-		return 0
-	case "version", "-v", "--version":
-		if len(args) != 1 {
-			fmt.Fprintln(os.Stderr, "version takes no options")
-			return 2
-		}
-		fmt.Println("ISKrona", version)
-		return 0
-	case "setup":
-		return runSetup(args[1:])
-	case "inspect":
-		return runInspect(args[1:])
-	case "watch":
-		return runWatch(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "unknown ISKrona command %q\n", args[0])
-		printUsage(os.Stderr)
-		return 2
-	}
+type exitError struct {
+	code int
+	err  error
 }
-func runSetup(args []string) int {
-	if len(args) > 0 {
-		fmt.Fprintln(os.Stderr, "setup takes no options")
+
+func (e *exitError) Error() string                { return e.err.Error() }
+func (e *exitError) Unwrap() error                { return e.err }
+func usageError(format string, args ...any) error { return &exitError{2, fmt.Errorf(format, args...)} }
+func commandError(err error) error                { return &exitError{1, err} }
+
+func main()                 { os.Exit(run(os.Args[1:])) }
+func run(args []string) int { return execute(args, os.Stdout, os.Stderr) }
+
+func execute(args []string, out, errOut io.Writer) int {
+	root := newRootCmd()
+	root.SetArgs(args)
+	root.SetOut(out)
+	root.SetErr(errOut)
+	if err := root.Execute(); err != nil {
+		var exitErr *exitError
+		if errors.As(err, &exitErr) {
+			fmt.Fprintln(errOut, exitErr.err)
+			return exitErr.code
+		}
+		fmt.Fprintln(errOut, err)
 		return 2
 	}
-	p, e := ConfigPath()
-	if e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		return 1
-	}
-	c, e := LoadConfig(p)
-	if e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		return 1
-	}
-	fmt.Printf("ISKrona settings created at %s\nMarket folder: %s\n", p, c.Market.Marketlogs)
 	return 0
 }
-func runInspect(args []string) int {
-	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	path := fs.String("path", "", "market export file")
-	if e := fs.Parse(args); e != nil {
-		return 2
+
+func newRootCmd() *cobra.Command {
+	var showVersion bool
+	root := &cobra.Command{
+		Use: "iskrona", Short: "EVE market signal console", SilenceErrors: true, SilenceUsage: true, Args: cobra.NoArgs,
+		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
+		PersistentPreRun:  func(cmd *cobra.Command, _ []string) { printBanner(cmd.OutOrStdout()) },
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if showVersion {
+				fmt.Fprintln(cmd.OutOrStdout(), "ISKrona", version)
+				return nil
+			}
+			_ = cmd.Help()
+			return usageError("a command is required")
+		},
 	}
-	if *path == "" {
-		fmt.Fprintln(os.Stderr, "inspect requires --path FILE")
-		return 2
+	root.Flags().BoolVarP(&showVersion, "version", "v", false, "print ISKrona version")
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError("%v", err) })
+	root.AddCommand(newSetupCmd(), newInspectCmd(), newWatchCmd(), newVersionCmd())
+	return root
+}
+
+func newSetupCmd() *cobra.Command {
+	return &cobra.Command{Use: "setup", Short: "Create or display ISKrona settings", Args: cobra.NoArgs, RunE: runSetup}
+}
+func runSetup(cmd *cobra.Command, _ []string) error {
+	p, err := ConfigPath()
+	if err != nil {
+		return commandError(err)
 	}
-	f, e := os.Open(*path)
-	if e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		return 1
+	c, err := LoadConfig(p)
+	if err != nil {
+		return commandError(err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "ISKrona settings created at %s\nMarket folder: %s\n", p, c.Market.Marketlogs)
+	return nil
+}
+
+func newInspectCmd() *cobra.Command {
+	var path string
+	cmd := &cobra.Command{Use: "inspect", Short: "Inspect one market export", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if !cmd.Flags().Changed("path") || path == "" {
+			return usageError("inspect requires --path FILE")
+		}
+		return runInspect(cmd, path)
+	}}
+	cmd.Flags().StringVar(&path, "path", "", "market export file")
+	return cmd
+}
+func runInspect(cmd *cobra.Command, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return commandError(err)
 	}
 	defer f.Close()
-	o, e := ParseMarketCSV(f)
-	if e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		return 1
+	orders, err := ParseMarketCSV(f)
+	if err != nil {
+		return commandError(err)
 	}
-	fmt.Printf("ISKrona inspection\nOrders loaded: %d\n", len(o))
-	return 0
+	fmt.Fprintf(cmd.OutOrStdout(), "ISKrona inspection\nOrders loaded: %d\n", len(orders))
+	return nil
 }
-func runWatch(args []string) int {
-	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	path := fs.String("path", "", "market folder override")
-	jumps := fs.Int("jumps", 0, "maximum market distance")
-	copyMode := fs.String("copy", "", "copy buy or sell recommendation")
-	noColor := fs.Bool("no-color", false, "disable terminal colors")
-	if e := fs.Parse(args); e != nil {
-		return 2
+
+func newWatchCmd() *cobra.Command {
+	var path, copyMode string
+	var jumps int
+	var noColor bool
+	cmd := &cobra.Command{Use: "watch", Short: "Monitor exports and show recommendations", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		o := watchOverrides(cmd, path, jumps, copyMode, noColor)
+		return runWatch(cmd, o)
+	}}
+	cmd.Flags().StringVar(&path, "path", "", "market folder override")
+	cmd.Flags().IntVar(&jumps, "jumps", 0, "maximum market distance")
+	cmd.Flags().StringVar(&copyMode, "copy", "", "copy buy or sell recommendation")
+	cmd.Flags().BoolVar(&noColor, "no-color", false, "disable terminal colors")
+	return cmd
+}
+
+func watchOverrides(cmd *cobra.Command, path string, jumps int, copyMode string, noColor bool) CLIOverrides {
+	o := CLIOverrides{NoColor: noColor}
+	if cmd.Flags().Changed("path") {
+		o.Path = &path
 	}
-	if fs.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "watch accepts options only")
-		return 2
+	if cmd.Flags().Changed("jumps") {
+		o.Jumps = &jumps
 	}
-	p, e := ConfigPath()
-	if e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		return 1
+	if cmd.Flags().Changed("copy") {
+		o.CopyMode = &copyMode
 	}
-	o := CLIOverrides{NoColor: *noColor}
-	fs.Visit(func(f *flag.Flag) {
-		switch f.Name {
-		case "path":
-			o.Path = path
-		case "jumps":
-			o.Jumps = jumps
-		case "copy":
-			o.CopyMode = copyMode
-		}
-	})
-	c, e := ResolveConfig(p, o)
-	if e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		return 1
+	return o
+}
+
+func runWatch(cmd *cobra.Command, overrides CLIOverrides) error {
+	p, err := ConfigPath()
+	if err != nil {
+		return commandError(err)
+	}
+	c, err := ResolveConfig(p, overrides)
+	if err != nil {
+		return commandError(err)
 	}
 	ready := InitClipboard() == nil
-	fmt.Printf("Watching: %s\nCopy target: %s\n\n", c.Market.Marketlogs, c.Display.CopyMode)
-	r := newMarketOutputRenderer(os.Stdout)
+	fmt.Fprintf(cmd.OutOrStdout(), "Watching: %s\nCopy target: %s\n\n", c.Market.Marketlogs, c.Display.CopyMode)
+	r := newMarketOutputRenderer(cmd.OutOrStdout())
 	r.color = c.Display.Color
-	h := marketFileHandler(c, ready, r)
+	h := marketFileHandler(c, ready, r, cmd.ErrOrStderr())
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if e = WatchDirectory(ctx, c.Market.Marketlogs, h); e != nil && !errors.Is(e, context.Canceled) {
-		fmt.Fprintln(os.Stderr, e)
-		return 1
+	if err = WatchDirectory(ctx, c.Market.Marketlogs, h); err != nil && !errors.Is(err, context.Canceled) {
+		return commandError(err)
 	}
-	return 0
+	return nil
 }
-func marketFileHandler(c Config, ready bool, r *marketOutputRenderer) func(string) error {
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{Use: "version", Short: "Print ISKrona version", Args: cobra.NoArgs, Run: func(cmd *cobra.Command, _ []string) { fmt.Fprintln(cmd.OutOrStdout(), "ISKrona", version) }}
+}
+
+func marketFileHandler(c Config, ready bool, r *marketOutputRenderer, errOut io.Writer) func(string) error {
 	return func(path string) error {
-		f, e := os.Open(path)
-		if e != nil {
+		f, err := os.Open(path)
+		if err != nil {
 			return nil
 		}
 		defer f.Close()
-		orders, e := ParseMarketCSV(f)
-		if e != nil {
-			fmt.Fprintf(os.Stderr, "%s: %v\n", filepath.Base(path), e)
+		orders, err := ParseMarketCSV(f)
+		if err != nil {
+			fmt.Fprintf(errOut, "%s: %v\n", filepath.Base(path), err)
 			return nil
 		}
 		s := AnalyzeMarket(orders, c.Market.MaxJumps)
@@ -186,17 +213,14 @@ func marketFileHandler(c Config, ready bool, r *marketOutputRenderer) func(strin
 			}
 		}
 		if ready {
-			var v int64
+			var valueCents int64
 			if c.Display.CopyMode == "buy" {
-				v = s.BuyCents
+				valueCents = s.BuyCents
 			} else {
-				v = s.SellCents
+				valueCents = s.SellCents
 			}
-			if v > 0 {
-				value := FormatCents(v)
-				if e := CopyText(value); e != nil {
-					fmt.Fprintln(os.Stderr, "warning: clipboard unavailable")
-				}
+			if valueCents > 0 && CopyText(FormatCents(valueCents)) != nil {
+				fmt.Fprintln(errOut, "warning: clipboard unavailable")
 			}
 		}
 		return r.render(lines...)
@@ -224,21 +248,17 @@ func exampleUnits(unitPrice, targetBudgetCents int64) int64 {
 	}
 	return lead * scale
 }
-
 func profitExample(buyCents, sellCents, units int64, broker, tax float64) (cost, revenue, profit int64) {
 	cost = int64(math.Round(float64(buyCents*units) * (1 + broker)))
 	revenue = int64(math.Round(float64(sellCents*units) * (1 - broker - tax)))
 	return cost, revenue, revenue - cost
 }
-
 func formatProfitRow(units, cost, revenue, profit int64) string {
 	return fmt.Sprintf("  %12s  %18s  %18s  %22s", FormatDisplayUnits(units), FormatDisplayCents(cost), FormatDisplayCents(revenue), FormatDisplayCents(profit)+" ISK")
 }
-
 func profitHeader() string {
 	return fmt.Sprintf("  %12s  %18s  %18s  %22s", "Units", "Cost", "Revenue", "Net profit")
 }
-
 func colorMargin(margin float64, text string) string {
 	color := "\x1b[32m"
 	if margin < 10 {
@@ -248,17 +268,14 @@ func colorMargin(margin float64, text string) string {
 	}
 	return color + text + "\x1b[0m"
 }
-func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "iskrona — EVE market signal console\n\nCommands:\n  watch                 monitor exports and show recommendations\n  setup                 create or display ISKrona settings\n  inspect --path FILE   inspect one market export\n  version               print ISKrona version\n  help                  show this guide\n\nwatch options:\n  --path DIR            market folder override\n  --jumps N             maximum market distance\n  --copy buy|sell       recommendation to copy\n  --no-color            plain terminal output")
-}
 
 func printBanner(w io.Writer) {
 	fmt.Fprintln(w, "  ██╗███████╗██╗  ██╗██████╗  ██████╗ ███╗   ██╗ █████╗")
 	fmt.Fprintln(w, "  ██║██╔════╝██║ ██╔╝██╔══██╗██╔═══██╗████╗  ██║██╔══██╗")
 	fmt.Fprintln(w, "  ██║███████╗█████╔╝ ██████╔╝██║   ██║██╔██╗ ██║███████║")
 	fmt.Fprintln(w, "  ██║╚════██║██╔═██╗ ██╔══██╗██║   ██║██║╚██╗██║██╔══██║")
-	fmt.Fprintln(w, "  ██║███████║██║  ██╗██║  ██║╚██████╔╝██║ ╚████║██║  ██║")
-	fmt.Fprintln(w, "  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═╝")
+	fmt.Fprintln(w, "  ██║███████╗██║  ██╗██║  ██╗╚██████╔╝██║ ╚████║██║  ██║")
+	fmt.Fprintln(w, "  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚═╝  ╚═══╝")
 	fmt.Fprintln(w, "  EVE Online margin price relay")
 	fmt.Fprintln(w)
 }
