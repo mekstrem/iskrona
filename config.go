@@ -14,6 +14,7 @@ type Config struct {
 	Market  MarketConfig  `toml:"market"`
 	Fees    FeeConfig     `toml:"fees"`
 	Display DisplayConfig `toml:"display"`
+	EVE     EVEConfig     `toml:"eve"`
 }
 type MarketConfig struct {
 	Marketlogs string `toml:"marketlogs"`
@@ -26,6 +27,15 @@ type FeeConfig struct {
 type DisplayConfig struct {
 	CopyMode string `toml:"copy_mode"`
 	Color    bool   `toml:"color"`
+}
+
+// EVEConfig holds non-secret metadata for the character and NPC station used
+// to derive fees. The refresh token is kept in the operating system keychain.
+type EVEConfig struct {
+	CharacterID   int64  `toml:"character_id"`
+	CharacterName string `toml:"character_name"`
+	StationID     int64  `toml:"station_id"`
+	StationName   string `toml:"station_name"`
 }
 
 // legacyConfig describes the pre-0.2 flat file so existing installations can

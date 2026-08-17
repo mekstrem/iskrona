@@ -33,12 +33,16 @@ iskrona watch --copy sell
 
 ```text
 iskrona setup
+iskrona login [--station NAME_OR_ID]
+iskrona logout
 iskrona watch [--path DIR] [--jumps N] [--copy buy|sell] [--no-color]
 iskrona inspect --path export.txt
 iskrona version
 ```
 
 - `setup` creates or displays the configuration location.
+- `login` opens EVE SSO and populates the broker fee and sales tax from the selected character. It models Jita 4-4 by default; use `--station` for another NPC station.
+- `logout` removes the EVE authorization from the operating system credential store.
 - `watch` monitors a Marketlogs directory and calculates buy, sell, margin, and profit examples.
 - `inspect` validates and counts the orders in one export without starting the watcher.
 - Run `iskrona --help` or `iskrona COMMAND --help` for the generated command reference.
@@ -64,6 +68,12 @@ color = true
 ```
 
 `max_jumps` limits the market distance considered. Fee values are decimal fractions: `0.02` means 2%. Per-run options override the corresponding saved settings.
+
+## EVE-derived fees
+
+`iskrona login` uses the local callback `http://localhost:8765/callback` and opens your browser for EVE SSO. The bundled EVE client ID is public; the app registration must retain this exact callback URL.
+
+ISKrona reads only your Accounting and Broker Relations skills plus NPC corporation/faction standings. The selected station defaults to Jita IV - Moon 4 - Caldari Navy Assembly Plant. Player-owned structures are not supported because their broker fees cannot be calculated from character data; retain or enter manual fees for them. Rerun `iskrona login` after skills or standings change.
 
 ## Clipboard and troubleshooting
 

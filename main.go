@@ -65,7 +65,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.Flags().BoolVarP(&showVersion, "version", "v", false, "print ISKrona version")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError("%v", err) })
-	root.AddCommand(newSetupCmd(), newInspectCmd(), newWatchCmd(), newVersionCmd())
+	root.AddCommand(newSetupCmd(), newInspectCmd(), newWatchCmd(), newLoginCmd(), newLogoutCmd(), newVersionCmd())
 	return root
 }
 
