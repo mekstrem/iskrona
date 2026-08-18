@@ -155,7 +155,7 @@ func runTUI(cmd *cobra.Command, overrides CLIOverrides) error {
 		return commandError(err)
 	}
 	ready := InitClipboard() == nil
-	if err := runMarketRelay(c, ready); err != nil {
+	if err := runMarketRelay(p, c, ready); err != nil {
 		return commandError(err)
 	}
 	return nil

@@ -52,6 +52,36 @@ func TestSaveConfigReplaceFailurePreservesExistingFile(t *testing.T) {
 	}
 }
 
+func TestSaveMaxJumpsPreservesOtherConfig(t *testing.T) {
+	dir := t.TempDir()
+	marketlogs := filepath.Join(dir, "marketlogs")
+	if err := os.Mkdir(marketlogs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.toml")
+	want := Config{
+		Market:  MarketConfig{Marketlogs: marketlogs, MaxJumps: 9},
+		Fees:    FeeConfig{Broker: 0.025, SalesTax: 0.011},
+		Display: DisplayConfig{CopyMode: "buy", Color: false},
+		EVE:     EVEConfig{CharacterID: 42, CharacterName: "Capsuleer", StationID: 60003760, StationName: "Jita IV - Moon 4"},
+	}
+	initial := want
+	initial.Market.MaxJumps = 2
+	if err := SaveConfig(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveMaxJumps(path, want.Market.MaxJumps); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("saved config = %#v, want %#v", got, want)
+	}
+}
+
 func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[market]\nmax_jumps = 1\nunknown = true\n"), 0o600); err != nil {

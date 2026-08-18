@@ -70,6 +70,8 @@ color = true
 
 `max_jumps` limits the market distance considered. Fee values are decimal fractions: `0.02` means 2%. Per-run options override the corresponding saved settings.
 
+While Market Relay is running, press `+` to increase the distance or `-` to decrease it. The dashboard recalculates the current export immediately, uses the new limit for later exports, and saves the value as the next-run default.
+
 ## EVE-derived fees
 
 `iskrona login` uses the local callback `http://localhost:8765/callback` and opens your browser for EVE SSO. The bundled EVE client ID is public; the app registration must retain this exact callback URL.

@@ -192,6 +192,22 @@ func SaveConfig(path string, c Config) error {
 	}
 	return nil
 }
+
+// saveMaxJumps updates only the persisted distance setting. Loading the saved
+// configuration first prevents temporary CLI overrides from leaking into the
+// user's defaults when the TUI changes the distance.
+func saveMaxJumps(path string, maxJumps int) error {
+	if maxJumps < 0 {
+		return fmt.Errorf("market.max_jumps must be nonnegative (got %d)", maxJumps)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+	c.Market.MaxJumps = maxJumps
+	return SaveConfig(path, c)
+}
+
 func ResolveConfig(path string, o CLIOverrides) (Config, error) {
 	c, e := LoadConfig(path)
 	if e != nil {

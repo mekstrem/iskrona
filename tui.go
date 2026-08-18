@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
@@ -45,8 +46,33 @@ type marketRelaySnapshot struct {
 
 type marketRelayEvent struct {
 	snapshot *marketRelaySnapshot
+	orders   []Order
 	status   string
 	isError  bool
+}
+
+// marketRelayRuntime is shared by the Bubble Tea event loop and the directory
+// watcher. The watcher always reads a consistent configuration snapshot before
+// analyzing an export.
+type marketRelayRuntime struct {
+	mu     sync.RWMutex
+	config Config
+}
+
+func newMarketRelayRuntime(c Config) *marketRelayRuntime {
+	return &marketRelayRuntime{config: c}
+}
+
+func (r *marketRelayRuntime) configSnapshot() Config {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.config
+}
+
+func (r *marketRelayRuntime) setMaxJumps(maxJumps int) {
+	r.mu.Lock()
+	r.config.Market.MaxJumps = maxJumps
+	r.mu.Unlock()
 }
 
 type marketRelayModel struct {
@@ -60,43 +86,54 @@ type marketRelayModel struct {
 	width, height int
 	clipboardOK   bool
 	copyPrice     func(int64) error
+	runtime       *marketRelayRuntime
+	saveMaxJumps  func(int) error
+	orders        []Order
 }
 
 func newMarketRelayModel(c Config, clipboardOK bool, events <-chan tea.Msg) marketRelayModel {
+	return newMarketRelayModelWithRuntime(newMarketRelayRuntime(c), func(int) error { return nil }, clipboardOK, events)
+}
+
+func newMarketRelayModelWithRuntime(runtime *marketRelayRuntime, saveMaxJumps func(int) error, clipboardOK bool, events <-chan tea.Msg) marketRelayModel {
 	s := spinner.New(spinner.WithSpinner(spinner.Dot))
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	return marketRelayModel{
-		config:      c,
-		events:      events,
-		spinner:     s,
-		status:      "Waiting for a new, stable EVE market export…",
-		clipboardOK: clipboardOK,
+		config:       runtime.configSnapshot(),
+		events:       events,
+		spinner:      s,
+		status:       "Waiting for a new, stable EVE market export…",
+		clipboardOK:  clipboardOK,
+		runtime:      runtime,
+		saveMaxJumps: saveMaxJumps,
 		copyPrice: func(value int64) error {
 			return CopyText(FormatCents(value))
 		},
 	}
 }
 
-func runMarketRelay(c Config, clipboardOK bool) error {
+func runMarketRelay(configPath string, c Config, clipboardOK bool) error {
 	if !isInteractiveTerminal() {
 		return errors.New("tui requires an interactive terminal")
 	}
 
 	events := make(chan tea.Msg, 16)
+	runtime := newMarketRelayRuntime(c)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
-		err := WatchDirectory(ctx, c.Market.Marketlogs, marketRelayFileHandler(ctx, c, clipboardOK, events))
+		err := WatchDirectory(ctx, c.Market.Marketlogs, marketRelayFileHandler(ctx, runtime, clipboardOK, events))
 		if err != nil && !errors.Is(err, context.Canceled) {
 			sendMarketRelayEvent(ctx, events, marketRelayEvent{status: err.Error(), isError: true})
 		}
 	}()
 
-	_, err := tea.NewProgram(newMarketRelayModel(c, clipboardOK, events), tea.WithAltScreen()).Run()
+	save := func(maxJumps int) error { return saveMaxJumps(configPath, maxJumps) }
+	_, err := tea.NewProgram(newMarketRelayModelWithRuntime(runtime, save, clipboardOK, events), tea.WithAltScreen()).Run()
 	return err
 }
 
-func marketRelayFileHandler(ctx context.Context, c Config, clipboardOK bool, events chan<- tea.Msg) func(string) error {
+func marketRelayFileHandler(ctx context.Context, runtime *marketRelayRuntime, clipboardOK bool, events chan<- tea.Msg) func(string) error {
 	return func(path string) error {
 		sendMarketRelayEvent(ctx, events, marketRelayEvent{status: fmt.Sprintf("Processing %s…", filepath.Base(path))})
 		f, err := os.Open(path)
@@ -111,21 +148,8 @@ func marketRelayFileHandler(ctx context.Context, c Config, clipboardOK bool, eve
 			return nil
 		}
 
-		summary := AnalyzeMarket(orders, c.Market.MaxJumps)
-		snapshot := &marketRelaySnapshot{
-			item:      strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)),
-			orders:    eligibleOrderCount(orders, c.Market.MaxJumps),
-			buyCents:  summary.BuyCents,
-			sellCents: summary.SellCents,
-			hasBuy:    summary.BestBuy != nil,
-			hasSell:   summary.BestSell != nil,
-			broker:    c.Fees.Broker,
-			tax:       c.Fees.SalesTax,
-			copyMode:  c.Display.CopyMode,
-		}
-		if snapshot.hasBuy && snapshot.hasSell {
-			snapshot.margin = CalculateMargin(snapshot.buyCents, snapshot.sellCents, c.Fees.Broker, c.Fees.SalesTax)
-		}
+		c := runtime.configSnapshot()
+		snapshot := marketRelaySnapshotForOrders(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), orders, c)
 
 		status := "Market data updated"
 		if clipboardOK {
@@ -138,9 +162,28 @@ func marketRelayFileHandler(ctx context.Context, c Config, clipboardOK bool, eve
 				}
 			}
 		}
-		sendMarketRelayEvent(ctx, events, marketRelayEvent{snapshot: snapshot, status: status})
+		sendMarketRelayEvent(ctx, events, marketRelayEvent{snapshot: snapshot, orders: orders, status: status})
 		return nil
 	}
+}
+
+func marketRelaySnapshotForOrders(item string, orders []Order, c Config) *marketRelaySnapshot {
+	summary := AnalyzeMarket(orders, c.Market.MaxJumps)
+	snapshot := &marketRelaySnapshot{
+		item:      item,
+		orders:    eligibleOrderCount(orders, c.Market.MaxJumps),
+		buyCents:  summary.BuyCents,
+		sellCents: summary.SellCents,
+		hasBuy:    summary.BestBuy != nil,
+		hasSell:   summary.BestSell != nil,
+		broker:    c.Fees.Broker,
+		tax:       c.Fees.SalesTax,
+		copyMode:  c.Display.CopyMode,
+	}
+	if snapshot.hasBuy && snapshot.hasSell {
+		snapshot.margin = CalculateMargin(snapshot.buyCents, snapshot.sellCents, c.Fees.Broker, c.Fees.SalesTax)
+	}
+	return snapshot
 }
 
 func eligibleOrderCount(orders []Order, maxJumps int) int {
@@ -174,6 +217,12 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
+		case "+":
+			m.adjustMaxJumps(1)
+			return m, nil
+		case "-":
+			m.adjustMaxJumps(-1)
+			return m, nil
 		case "?":
 			m.showHelp = !m.showHelp
 			return m, nil
@@ -196,12 +245,36 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case marketRelayEvent:
 		if msg.snapshot != nil {
+			m.orders = msg.orders
 			m.snapshot = msg.snapshot
+			if msg.orders != nil {
+				m.config = m.runtime.configSnapshot()
+				m.snapshot = marketRelaySnapshotForOrders(msg.snapshot.item, msg.orders, m.config)
+			}
 		}
 		m.status, m.isError = msg.status, msg.isError
 		return m, waitForMarketRelayEvent(m.events)
 	}
 	return m, nil
+}
+
+func (m *marketRelayModel) adjustMaxJumps(delta int) {
+	current := m.config.Market.MaxJumps
+	if delta < 0 && current == 0 {
+		m.status, m.isError = "Max distance is already 0 jumps", false
+		return
+	}
+	next := current + delta
+	if err := m.saveMaxJumps(next); err != nil {
+		m.status, m.isError = fmt.Sprintf("Could not save max distance: %v", err), true
+		return
+	}
+	m.runtime.setMaxJumps(next)
+	m.config = m.runtime.configSnapshot()
+	if m.snapshot != nil {
+		m.snapshot = marketRelaySnapshotForOrders(m.snapshot.item, m.orders, m.config)
+	}
+	m.status, m.isError = fmt.Sprintf("Max distance set to %d jumps", next), false
 }
 
 func (m *marketRelayModel) copy(side string) {
@@ -253,7 +326,7 @@ func (m marketRelayModel) View() string {
 	profit := styles.panel.Width(width - 4).Render(styles.heading.Render("PROFIT EXAMPLES") + "\n" + m.profitTable(styles))
 	view := "\n" + header + "\n" + meta + "\n\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right) + "\n\n" + profit + "\n\n" + m.footer(styles)
 	if m.showHelp {
-		view += "\n\n" + styles.panel.Width(width-4).Render(styles.heading.Render("KEYS")+"\n[y] copy sell   [b] copy buy   [c] copy configured target   [?] close help   [q] quit")
+		view += "\n\n" + styles.panel.Width(width-4).Render(styles.heading.Render("KEYS")+"\n[y] copy sell   [b] copy buy   [c] copy configured target   [+] increase distance   [-] decrease distance   [?] close help   [q] quit")
 	}
 	return view
 }
@@ -313,7 +386,7 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 }
 
 func (m marketRelayModel) footer(styles marketRelayStyles) string {
-	controls := styles.footer.Render("[y] sell  [b] buy  [c] copy target  [?] help  [q] quit")
+	controls := styles.footer.Render("[y] sell  [b] buy  [c] copy target  [+/-] distance  [?] help  [q] quit")
 	if !m.isError && (m.snapshot == nil || m.status == "Market data updated") {
 		return controls
 	}
