@@ -1,6 +1,6 @@
 module iskrona
 
-go 1.24.2
+go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
@@ -10,7 +10,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/zalando/go-keyring v0.2.6
 	golang.design/x/clipboard v0.8.0
-	golang.org/x/sys v0.38.0
+	golang.org/x/sys v0.47.0
 )
 
 require (
