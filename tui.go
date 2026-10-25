@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -42,6 +44,7 @@ type marketRelaySnapshot struct {
 	broker    float64
 	tax       float64
 	copyMode  string
+	maxJumps  int
 }
 
 type marketRelayEvent struct {
@@ -49,6 +52,7 @@ type marketRelayEvent struct {
 	orders   []Order
 	status   string
 	isError  bool
+	copied   bool
 }
 
 // marketRelayRuntime is shared by the Bubble Tea event loop and the directory
@@ -89,6 +93,23 @@ type marketRelayModel struct {
 	runtime       *marketRelayRuntime
 	saveMaxJumps  func(int) error
 	orders        []Order
+	recent        []marketRelaySnapshot
+	showRecent    bool
+	dense         bool
+	showPalette   bool
+	showDetails   bool
+	commandIndex  int
+	toast         string
+	toastID       uint64
+	lastError     string
+}
+
+type marketRelayToastExpired uint64
+
+var marketRelayCommands = []string{
+	"Copy sell price", "Copy buy price", "Copy configured target",
+	"Increase max distance", "Decrease max distance", "Toggle compact spacing",
+	"Details", "Help", "Quit",
 }
 
 func newMarketRelayModel(c Config, clipboardOK bool, events <-chan tea.Msg) marketRelayModel {
@@ -97,7 +118,7 @@ func newMarketRelayModel(c Config, clipboardOK bool, events <-chan tea.Msg) mark
 
 func newMarketRelayModelWithRuntime(runtime *marketRelayRuntime, saveMaxJumps func(int) error, clipboardOK bool, events <-chan tea.Msg) marketRelayModel {
 	s := spinner.New(spinner.WithSpinner(spinner.Dot))
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#6D4CBA", Dark: "#A78BFA"})
 	return marketRelayModel{
 		config:       runtime.configSnapshot(),
 		events:       events,
@@ -152,17 +173,20 @@ func marketRelayFileHandler(ctx context.Context, runtime *marketRelayRuntime, cl
 		snapshot := marketRelaySnapshotForOrders(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), orders, c)
 
 		status := "Market data updated"
+		copied, copyFailed := false, false
 		if clipboardOK {
 			value, label := snapshot.copyValue(c.Display.CopyMode)
 			if value > 0 {
 				if err := CopyText(FormatCents(value)); err != nil {
 					status = "Clipboard unavailable; market analysis is still ready"
+					copyFailed = true
 				} else {
 					status = fmt.Sprintf("%s copied automatically", label)
+					copied = true
 				}
 			}
 		}
-		sendMarketRelayEvent(ctx, events, marketRelayEvent{snapshot: snapshot, orders: orders, status: status})
+		sendMarketRelayEvent(ctx, events, marketRelayEvent{snapshot: snapshot, orders: orders, status: status, copied: copied, isError: copyFailed})
 		return nil
 	}
 }
@@ -179,6 +203,7 @@ func marketRelaySnapshotForOrders(item string, orders []Order, c Config) *market
 		broker:    c.Fees.Broker,
 		tax:       c.Fees.SalesTax,
 		copyMode:  c.Display.CopyMode,
+		maxJumps:  c.Market.MaxJumps,
 	}
 	if snapshot.hasBuy && snapshot.hasSell {
 		snapshot.margin = CalculateMargin(snapshot.buyCents, snapshot.sellCents, c.Fees.Broker, c.Fees.SalesTax)
@@ -214,27 +239,76 @@ func (m marketRelayModel) Init() tea.Cmd {
 func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q":
+		key := msg.String()
+		if key == "ctrl+c" {
 			return m, tea.Quit
+		}
+		if m.showPalette || m.showDetails || m.showHelp {
+			if key == "esc" || key == "q" || (key == "?" && m.showHelp) || (key == "i" && m.showDetails) || (key == "k" && m.showPalette) {
+				m.showPalette, m.showDetails, m.showHelp = false, false, false
+				return m, nil
+			}
+			if !m.showPalette {
+				return m, nil
+			}
+			switch key {
+			case "up":
+				m.commandIndex = (m.commandIndex + len(marketRelayCommands) - 1) % len(marketRelayCommands)
+			case "down":
+				m.commandIndex = (m.commandIndex + 1) % len(marketRelayCommands)
+			case "enter":
+				m.showPalette = false
+				switch m.commandIndex {
+				case 0, 1, 2:
+					side := []string{"sell", "buy", m.config.Display.CopyMode}[m.commandIndex]
+					m.copy(side)
+					return m.notify()
+				case 3, 4:
+					if m.commandIndex == 3 {
+						m.adjustMaxJumps(1)
+					} else {
+						m.adjustMaxJumps(-1)
+					}
+					return m.notify()
+				case 5:
+					m.dense = !m.dense
+				case 6:
+					m.showDetails = true
+				case 7:
+					m.showHelp = true
+				case 8:
+					return m, tea.Quit
+				}
+			}
+			return m, nil
+		}
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "k":
+			m.showPalette = true
+		case "i":
+			m.showDetails = true
+		case "d":
+			m.showRecent = !m.showRecent
 		case "+":
 			m.adjustMaxJumps(1)
-			return m, nil
+			return m.notify()
 		case "-":
 			m.adjustMaxJumps(-1)
-			return m, nil
+			return m.notify()
 		case "?":
 			m.showHelp = !m.showHelp
 			return m, nil
 		case "y":
 			m.copy("sell")
-			return m, nil
+			return m.notify()
 		case "b":
 			m.copy("buy")
-			return m, nil
+			return m.notify()
 		case "c":
 			m.copy(m.config.Display.CopyMode)
-			return m, nil
+			return m.notify()
 		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -245,6 +319,10 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	case marketRelayEvent:
 		if msg.snapshot != nil {
+			m.recent = append([]marketRelaySnapshot{*msg.snapshot}, m.recent...)
+			if len(m.recent) > 5 {
+				m.recent = m.recent[:5]
+			}
 			m.orders = msg.orders
 			m.snapshot = msg.snapshot
 			if msg.orders != nil {
@@ -253,9 +331,26 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.status, m.isError = msg.status, msg.isError
+		if msg.isError || msg.copied {
+			_, cmd := m.notify()
+			return m, tea.Batch(waitForMarketRelayEvent(m.events), cmd)
+		}
 		return m, waitForMarketRelayEvent(m.events)
+	case marketRelayToastExpired:
+		if uint64(msg) == m.toastID {
+			m.toast = ""
+		}
 	}
 	return m, nil
+}
+
+func (m *marketRelayModel) notify() (tea.Model, tea.Cmd) {
+	m.toast, m.toastID = m.status, m.toastID+1
+	if m.isError {
+		m.lastError = m.status
+	}
+	id := m.toastID
+	return *m, tea.Tick(3*time.Second, func(time.Time) tea.Msg { return marketRelayToastExpired(id) })
 }
 
 func (m *marketRelayModel) adjustMaxJumps(delta int) {
@@ -310,62 +405,201 @@ func (m marketRelayModel) View() string {
 		return "\n  Market Relay needs at least 80 columns and 18 rows. Resize the terminal.\n"
 	}
 	styles := newMarketRelayStyles(m.config.Display.Color)
-	width := m.width
+	width, height := m.width, m.height
 	if width == 0 {
 		width = 120
 	}
-
-	header := styles.title.Render("ISKrona / MARKET RELAY") + "  " + styles.muted.Render("LIVE MARKET WATCH")
-	meta := styles.muted.Render(fmt.Sprintf("Watching: %s  ·  Max distance: %d jumps", m.config.Market.Marketlogs, m.config.Market.MaxJumps))
-	if m.snapshot == nil {
-		body := styles.panel.Width(width - 4).Render(styles.heading.Render("CURRENT EXPORT") + "\n\n" + m.spinner.View() + " " + m.status)
-		view := "\n" + header + "\n" + meta + "\n\n" + body + "\n\n" + m.footer(styles)
-		if m.showHelp {
-			view += "\n\n" + m.help(styles, width)
+	if height == 0 {
+		height = 30
+	}
+	roomy := width >= 100 && height >= 22
+	contentWidth := min(width-4, 112)
+	inset := (width - contentWidth) / 2
+	header := styles.title.Render("ISKrona / MARKET RELAY")
+	filter := styles.muted.Render(fmt.Sprintf("FILTER ≤ %d jumps", m.config.Market.MaxJumps))
+	header += strings.Repeat(" ", max(2, contentWidth-lipgloss.Width(header)-lipgloss.Width(filter))) + filter
+	var lines []string
+	switch {
+	case m.showPalette:
+		lines = append(lines, styles.heading.Render("COMMANDS"), styles.muted.Render("↑/↓ select  ·  Enter run  ·  Esc close"), "")
+		for i, command := range marketRelayCommands {
+			prefix := "  "
+			if i == m.commandIndex {
+				prefix = "› "
+				lines = append(lines, styles.selected.Width(min(contentWidth, 72)-4).Render(prefix+command))
+				continue
+			}
+			lines = append(lines, prefix+command)
 		}
-		return view
+	case m.showHelp:
+		lines = []string{styles.heading.Render("KEYS  ·  Esc / q close"),
+			"y  copy sell     b  copy buy     c  copy configured target",
+			"+  increase distance     -  decrease distance",
+			"d  recent exports     i  details     k  commands",
+			"Compact spacing: toggle in commands; keeps prices and profit examples",
+			"?  help     q  quit (outside sheets)     Ctrl+C  always quit"}
+	case m.showDetails:
+		lines = []string{styles.heading.Render("DETAILS  ·  Esc / q close"),
+			fmt.Sprintf("FILTER: max distance %d jumps (not a route)", m.config.Market.MaxJumps),
+			fmt.Sprintf("Broker: %.2f%%  ·  Sales tax: %.2f%%", m.config.Fees.Broker*100, m.config.Fees.SalesTax*100),
+			m.autoCopyStatus(), styles.heading.Render("PROFIT EXAMPLES")}
+		if m.snapshot == nil {
+			lines = append(lines, "Waiting for the first export; no recommendations yet.")
+		} else {
+			details := m
+			details.width = min(contentWidth, 72)
+			lines = append(lines, strings.Split(details.profitTable(styles), "\n")...)
+		}
+		if m.lastError != "" {
+			lines = append(lines, "Last error: "+m.lastError)
+		}
+	default:
+		lines = m.dashboard(styles, contentWidth, roomy)
 	}
-
-	left, right := m.panels(styles, width)
-	profit := styles.panel.Width(width - 4).Render(styles.heading.Render("PROFIT EXAMPLES") + "\n" + m.profitTable(styles))
-	view := "\n" + header + "\n" + meta + "\n\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right) + "\n\n" + profit + "\n\n" + m.footer(styles)
-	if m.showHelp {
-		view += "\n\n" + m.help(styles, width)
+	overlay := m.showPalette || m.showHelp || m.showDetails
+	if roomy && overlay && !m.showPalette {
+		lines = append([]string{lines[0], ""}, lines[1:]...)
 	}
-	return view
+	view := []string{header, ""}
+	if roomy {
+		view = append([]string{""}, view...)
+	}
+	if overlay {
+		sheetWidth := min(contentWidth, 72)
+		for i := range lines {
+			lines[i] = relayClip(lines[i], sheetWidth-4)
+		}
+		padding := 0
+		if roomy {
+			padding = 1
+		}
+		sheet := styles.surface.Width(sheetWidth).Padding(padding, 2).Render(strings.Join(lines, "\n"))
+		lines = strings.Split(sheet, "\n")
+		for i := range lines {
+			lines[i] = strings.Repeat(" ", (contentWidth-sheetWidth)/2) + lines[i]
+		}
+		for range max(0, (height-4-len(view)-len(lines))/2) {
+			view = append(view, "")
+		}
+	}
+	view = append(view, lines...)
+	status := m.toast
+	if status == "" {
+		status = m.autoCopyStatus() + "  ·  i details"
+		if strings.HasPrefix(m.status, "Processing ") {
+			status = m.status
+		}
+		if m.lastError != "" {
+			status = "Last error: " + m.lastError + "  ·  i details"
+		}
+	}
+	status = relayClip(status, contentWidth)
+	if m.isError && m.toast != "" {
+		status = styles.error.Render(status)
+	} else {
+		status = styles.muted.Render(status)
+	}
+	// Keep status and controls at the bottom, independently of dashboard density.
+	view = view[:min(len(view), height-4)]
+	for len(view) < height-4 {
+		view = append(view, "")
+	}
+	watching := "Watching: " + m.config.Market.Marketlogs
+	view = append(view, styles.muted.Render(strings.Repeat("─", contentWidth)), styles.muted.Render(relayClip(watching, contentWidth)), status, m.footer(styles))
+	for i := range view {
+		view[i] = strings.Repeat(" ", inset) + relayClip(view[i], contentWidth)
+	}
+	rendered := strings.Join(view, "\n")
+	if !m.config.Display.Color {
+		return ansi.Strip(rendered)
+	}
+	return rendered
 }
 
-func (m marketRelayModel) help(styles marketRelayStyles, width int) string {
-	return styles.panel.Width(width - 4).Render(styles.heading.Render("KEYS") + "\n[y] copy sell   [b] copy buy   [c] copy configured target   [+] increase distance   [-] decrease distance   [?] close help   [q] quit")
+func relayClip(s string, width int) string {
+	return ansi.Truncate(strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(s), width, "…")
 }
 
-func (m marketRelayModel) panels(styles marketRelayStyles, width int) (string, string) {
-	panelWidth := (width - 6) / 2
-	if panelWidth < 36 {
-		panelWidth = 36
+func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy bool) []string {
+	if m.snapshot == nil {
+		spin := m.spinner.View()
+		if !m.config.Display.Color {
+			spin = ansi.Strip(spin)
+		}
+		return []string{styles.muted.Render("MARKET WATCH"), "", spin + " Waiting for a new, stable EVE market export…", "", "Export market orders from EVE to begin."}
 	}
+	s := m.snapshot
 	margin := "unavailable"
-	if m.snapshot.hasBuy && m.snapshot.hasSell {
-		margin = fmt.Sprintf("%.2f%%", m.snapshot.margin)
-		margin = styles.margin(m.snapshot.margin).Render(margin)
+	if s.hasBuy && s.hasSell {
+		margin = styles.margin(s.margin).Render(fmt.Sprintf("%.2f%%", s.margin))
 	}
-	left := strings.Join([]string{
-		styles.heading.Render("CURRENT EXPORT"),
-		styles.item.Render(m.snapshot.item),
-		styles.muted.Render(fmt.Sprintf("%d eligible orders · latest stable export", m.snapshot.orders)),
-	}, "\n")
-	autoCopy := "DISABLED"
+	lines := []string{styles.muted.Render("CURRENT EXPORT"), styles.item.Render(relayClip(s.item, width))}
+	if !m.showRecent || roomy {
+		lines = append(lines, styles.muted.Render(fmt.Sprintf("%d eligible orders · latest stable export", s.orders)))
+	}
+	if roomy && !m.dense {
+		lines = append(lines, "")
+		if m.height >= 28 {
+			lines = append(lines, "")
+		}
+	}
+	if !roomy && !m.dense && !m.showRecent {
+		lines = append(lines, "")
+	}
+	// Wide screens use three distinct zones; terminal fonts cannot provide scale.
+	columnWidth := width / 3
+	if !roomy {
+		columnWidth = width / 2
+	}
+	column := lipgloss.NewStyle().Width(columnWidth)
+	labels := column.Render(styles.heading.Render("SELL PRICE  [y]")) + column.Render(styles.heading.Render("BUY PRICE  [b]"))
+	values := column.Render(m.price(s.sellCents, s.hasSell, styles)) + column.Render(m.price(s.buyCents, s.hasBuy, styles))
+	if roomy {
+		labels += styles.heading.Render("NET MARGIN")
+		values += margin
+	}
+	lines = append(lines, labels)
+	if roomy && !m.dense {
+		lines = append(lines, "")
+	}
+	lines = append(lines, values)
+	if !roomy {
+		if !m.dense && !m.showRecent {
+			lines = append(lines, "")
+		}
+		lines = append(lines, "NET MARGIN  "+margin)
+	}
+	if m.showRecent {
+		if roomy {
+			lines = append(lines, "")
+		}
+		lines = append(lines, styles.heading.Render("RECENT EXPORTS  ·  captured summaries, newest first"))
+		if len(m.recent) == 0 {
+			lines = append(lines, "No exports received in this session.")
+		}
+		for _, recent := range m.recent {
+			summary := fmt.Sprintf("S %s  B %s  ≤%dj", m.price(recent.sellCents, recent.hasSell, styles), m.price(recent.buyCents, recent.hasBuy, styles), recent.maxJumps)
+			itemWidth := max(4, width-2-lipgloss.Width(summary))
+			lines = append(lines, relayClip(recent.item, itemWidth)+"  "+summary)
+		}
+	} else if roomy {
+		lines = append(lines, "")
+		if !m.dense && m.height >= 28 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, styles.heading.Render("PROFIT EXAMPLES"), styles.muted.Render(fmt.Sprintf("After %.2f%% broker + %.2f%% sales tax", s.broker*100, s.tax*100)), "")
+		lines = append(lines, strings.Split(m.profitTable(styles), "\n")...)
+	} else {
+		lines = append(lines, "", styles.muted.Render("i  profit examples & fees  ·  d  recent exports"))
+	}
+	return lines
+}
+
+func (m marketRelayModel) autoCopyStatus() string {
 	if m.clipboardOK {
-		autoCopy = strings.ToUpper(m.snapshot.copyMode)
+		return "Auto-copy: " + strings.ToUpper(m.config.Display.CopyMode) + " · clipboard available"
 	}
-	right := strings.Join([]string{
-		styles.heading.Render("RECOMMENDATION"),
-		"SELL  " + m.price(m.snapshot.sellCents, m.snapshot.hasSell, styles),
-		"BUY   " + m.price(m.snapshot.buyCents, m.snapshot.hasBuy, styles),
-		"NET MARGIN  " + margin,
-		styles.muted.Render(fmt.Sprintf("Auto-copy: %s", autoCopy)),
-	}, "\n")
-	return styles.panel.Width(panelWidth).Render(left), styles.panel.Width(panelWidth).Render(right)
+	return "Auto-copy: DISABLED · clipboard unavailable"
 }
 
 func (m marketRelayModel) price(value int64, available bool, styles marketRelayStyles) string {
@@ -380,6 +614,10 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 		return styles.muted.Render("Profit examples need both an eligible buy and sell order.")
 	}
 	lines := []string{fmt.Sprintf("%-12s  %-18s  %-18s  %s", "Units", "Cost", "Revenue", "Net profit")}
+	compact := m.width > 0 && m.width < 110
+	if compact {
+		lines = []string{"Units  ·  Net profit after fees (ISK)"}
+	}
 	previous := int64(0)
 	for _, budget := range []int64{100_000_000, 1_000_000_000, 10_000_000_000} {
 		units := exampleUnits(m.snapshot.buyCents, budget)
@@ -388,63 +626,60 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 		}
 		previous = units
 		cost, revenue, net := profitExample(m.snapshot.buyCents, m.snapshot.sellCents, units, m.snapshot.broker, m.snapshot.tax)
-		lines = append(lines, fmt.Sprintf("%-12s  %-18s  %-18s  %s ISK", FormatDisplayUnits(units), FormatDisplayCents(cost), FormatDisplayCents(revenue), FormatDisplayCents(net)))
+		netProfit := styles.margin(float64(net)).Render(FormatDisplayCents(net) + " ISK")
+		if compact {
+			lines = append(lines, fmt.Sprintf("%s  ·  %s", FormatDisplayUnits(units), netProfit))
+		} else {
+			lines = append(lines, fmt.Sprintf("%-12s  %-18s  %-18s  %s", FormatDisplayUnits(units), FormatDisplayCents(cost), FormatDisplayCents(revenue), netProfit))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
 
 func (m marketRelayModel) footer(styles marketRelayStyles) string {
-	controls := styles.footer.Render("[y] sell  [b] buy  [c] copy target  [+/-] distance  [?] help  [q] quit")
-	if !m.isError && (m.snapshot == nil || m.status == "Market data updated") {
-		return controls
+	if m.showPalette || m.showHelp || m.showDetails {
+		return styles.footer.Render("[Esc/q] close  [Ctrl+C] quit")
 	}
-	status := m.status
-	if m.isError {
-		status = styles.error.Render(status)
-	} else {
-		status = styles.muted.Render(status)
-	}
-	return controls + "  " + status
+	return styles.footer.Render("[y] sell b buy c target +/- filter d recent i info k cmd ? help q quit")
 }
 
 type marketRelayStyles struct {
-	title, heading, item, price, muted, error, footer, panel lipgloss.Style
-	margin                                                   func(float64) lipgloss.Style
+	title, heading, item, price, muted, error, footer, surface, selected lipgloss.Style
+	margin                                                               func(float64) lipgloss.Style
 }
 
 func newMarketRelayStyles(color bool) marketRelayStyles {
-	panel := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
 	styles := marketRelayStyles{
-		title:   lipgloss.NewStyle().Bold(true),
-		heading: lipgloss.NewStyle().Bold(true),
-		item:    lipgloss.NewStyle().Bold(true),
-		price:   lipgloss.NewStyle().Bold(true),
-		muted:   lipgloss.NewStyle(),
-		error:   lipgloss.NewStyle().Bold(true),
-		footer:  lipgloss.NewStyle(),
-		panel:   panel,
+		title:    lipgloss.NewStyle().Bold(true),
+		heading:  lipgloss.NewStyle().Bold(true),
+		item:     lipgloss.NewStyle().Bold(true),
+		price:    lipgloss.NewStyle().Bold(true),
+		muted:    lipgloss.NewStyle(),
+		error:    lipgloss.NewStyle().Bold(true),
+		footer:   lipgloss.NewStyle(),
+		surface:  lipgloss.NewStyle(),
+		selected: lipgloss.NewStyle().Bold(true),
 	}
 	if !color {
-		styles.margin = func(float64) lipgloss.Style { return lipgloss.NewStyle().Bold(true) }
+		styles.margin = func(float64) lipgloss.Style { return lipgloss.NewStyle() }
 		return styles
 	}
-	cyan := lipgloss.Color("14")
-	styles.title = styles.title.Foreground(cyan)
-	styles.heading = styles.heading.Foreground(cyan)
-	styles.item = styles.item.Foreground(lipgloss.Color("15"))
-	styles.price = styles.price.Foreground(lipgloss.Color("15"))
-	styles.muted = styles.muted.Foreground(lipgloss.Color("8"))
-	styles.error = styles.error.Foreground(lipgloss.Color("9"))
-	styles.footer = styles.footer.Foreground(cyan)
-	styles.panel = panel.BorderForeground(lipgloss.Color("6"))
+	accent := lipgloss.AdaptiveColor{Light: "#6D4CBA", Dark: "#A78BFA"}
+	styles.title = styles.title.Foreground(accent)
+	styles.heading = styles.heading.Bold(false).Foreground(lipgloss.AdaptiveColor{Light: "#5C5665", Dark: "#AAA4B0"})
+	styles.muted = styles.muted.Foreground(lipgloss.AdaptiveColor{Light: "#77717E", Dark: "#8A8491"})
+	styles.footer = styles.footer.Foreground(lipgloss.AdaptiveColor{Light: "#5C5665", Dark: "#AAA4B0"})
+	styles.surface = styles.surface.Background(lipgloss.AdaptiveColor{Light: "#F0EDF4", Dark: "#25232B"})
+	styles.selected = styles.selected.Foreground(accent).Background(lipgloss.AdaptiveColor{Light: "#E4DFEC", Dark: "#35313E"})
 	styles.margin = func(value float64) lipgloss.Style {
-		color := lipgloss.Color("10")
-		if value < 10 {
-			color = lipgloss.Color("9")
-		} else if value < 25 {
-			color = lipgloss.Color("11")
+		style := lipgloss.NewStyle().Bold(true)
+		if value > 0 {
+			return style.Foreground(lipgloss.AdaptiveColor{Light: "#237A45", Dark: "#80C99B"})
 		}
-		return lipgloss.NewStyle().Bold(true).Foreground(color)
+		if value < 0 {
+			return style.Foreground(lipgloss.AdaptiveColor{Light: "#B13C47", Dark: "#ED8796"})
+		}
+		return style
 	}
 	return styles
 }
