@@ -87,6 +87,19 @@ func TestMarketRelayKeyActionsAndHelp(t *testing.T) {
 		t.Fatalf("help view = %q", withHelp.View())
 	}
 
+	waiting := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+	waiting.width, waiting.height = 120, 30
+	updated, _ = waiting.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	waitingWithHelp := updated.(marketRelayModel)
+	if !strings.Contains(waitingWithHelp.View(), "KEYS") {
+		t.Fatalf("waiting help view = %q", waitingWithHelp.View())
+	}
+	updated, _ = waitingWithHelp.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
+	waitingWithoutHelp := updated.(marketRelayModel)
+	if strings.Contains(waitingWithoutHelp.View(), "KEYS") {
+		t.Fatalf("waiting help remained visible = %q", waitingWithoutHelp.View())
+	}
+
 	m.clipboardOK = false
 	m.copy("buy")
 	if !m.isError || m.status != "Clipboard unavailable" {

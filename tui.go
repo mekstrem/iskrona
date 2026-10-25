@@ -319,16 +319,24 @@ func (m marketRelayModel) View() string {
 	meta := styles.muted.Render(fmt.Sprintf("Watching: %s  ·  Max distance: %d jumps", m.config.Market.Marketlogs, m.config.Market.MaxJumps))
 	if m.snapshot == nil {
 		body := styles.panel.Width(width - 4).Render(styles.heading.Render("CURRENT EXPORT") + "\n\n" + m.spinner.View() + " " + m.status)
-		return "\n" + header + "\n" + meta + "\n\n" + body + "\n\n" + m.footer(styles)
+		view := "\n" + header + "\n" + meta + "\n\n" + body + "\n\n" + m.footer(styles)
+		if m.showHelp {
+			view += "\n\n" + m.help(styles, width)
+		}
+		return view
 	}
 
 	left, right := m.panels(styles, width)
 	profit := styles.panel.Width(width - 4).Render(styles.heading.Render("PROFIT EXAMPLES") + "\n" + m.profitTable(styles))
 	view := "\n" + header + "\n" + meta + "\n\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right) + "\n\n" + profit + "\n\n" + m.footer(styles)
 	if m.showHelp {
-		view += "\n\n" + styles.panel.Width(width-4).Render(styles.heading.Render("KEYS")+"\n[y] copy sell   [b] copy buy   [c] copy configured target   [+] increase distance   [-] decrease distance   [?] close help   [q] quit")
+		view += "\n\n" + m.help(styles, width)
 	}
 	return view
+}
+
+func (m marketRelayModel) help(styles marketRelayStyles, width int) string {
+	return styles.panel.Width(width - 4).Render(styles.heading.Render("KEYS") + "\n[y] copy sell   [b] copy buy   [c] copy configured target   [+] increase distance   [-] decrease distance   [?] close help   [q] quit")
 }
 
 func (m marketRelayModel) panels(styles marketRelayStyles, width int) (string, string) {
