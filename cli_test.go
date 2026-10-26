@@ -20,13 +20,19 @@ func TestExecuteVersionCommands(t *testing.T) {
 	}
 }
 
-func TestExecuteInspectRequiresPath(t *testing.T) {
-	var out, errOut strings.Builder
-	if code := execute([]string{"inspect"}, &out, &errOut); code != 2 {
-		t.Fatalf("code = %d, want 2", code)
+func TestDoctorCLI(t *testing.T) {
+	for _, args := range [][]string{{"setup"}, {"inspect"}, {"doctor", "extra"}, {"doctor", "--path", "x"}} {
+		var out, errOut strings.Builder
+		if code := execute(args, &out, &errOut); code != 2 {
+			t.Fatalf("%v: code %d", args, code)
+		}
 	}
-	if got := errOut.String(); !strings.Contains(got, "inspect requires --path FILE") {
-		t.Fatalf("stderr = %q", got)
+	var out, errOut strings.Builder
+	if code := execute([]string{"--help"}, &out, &errOut); code != 0 {
+		t.Fatal(code)
+	}
+	if !strings.Contains(out.String(), "doctor") || strings.Contains(out.String(), "setup") || strings.Contains(out.String(), "inspect") {
+		t.Fatal(out.String())
 	}
 }
 
