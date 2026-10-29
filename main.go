@@ -46,17 +46,17 @@ func execute(args []string, out, errOut io.Writer) int {
 
 func newRootCmd() *cobra.Command {
 	var showVersion bool
-	root := &cobra.Command{
-		Use: "iskrona", Short: "EVE market signal console", SilenceErrors: true, SilenceUsage: true, Args: cobra.NoArgs,
-		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if showVersion {
-				fmt.Fprintln(cmd.OutOrStdout(), "ISKrona", version)
-				return nil
-			}
-			_ = cmd.Help()
-			return usageError("a command is required")
-		},
+	root := newMarketRelayCmd("iskrona", "EVE market signal console")
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.CompletionOptions.DisableDefaultCmd = true
+	root.SetHelpCommand(&cobra.Command{Hidden: true})
+	runRelay := root.RunE
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		if showVersion {
+			fmt.Fprintln(cmd.OutOrStdout(), "ISKrona", version)
+			return nil
+		}
+		return runRelay(cmd, args)
 	}
 	root.Flags().BoolVarP(&showVersion, "version", "v", false, "print ISKrona version")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError("%v", err) })

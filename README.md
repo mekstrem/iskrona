@@ -19,19 +19,20 @@ Prebuilt releases are available for Windows, macOS, and Linux on amd64 and arm64
 ## Quick start
 
 1. In EVE Online, open a market item and use the market-export action to create a `.txt` export in the EVE `Marketlogs` folder.
-2. Start watching for new exports (normal `tui` startup automatically creates missing configuration):
+2. Start watching for new exports (normal startup automatically creates missing configuration):
 
 ```text
-iskrona tui --copy sell
+iskrona
 ```
 
-3. If the folder was not detected, set `market.marketlogs` in the configuration file, or use `iskrona tui --path DIR`. Automatic detection checks only `Documents/EVE/logs/Marketlogs` under your home directory, not every possible EVE installation or redirected Documents folder.
+3. If the folder was not detected, set `market.marketlogs` in the configuration file, or use `iskrona --path DIR`. Automatic detection checks only `Documents/EVE/logs/Marketlogs` under your home directory, not every possible EVE installation or redirected Documents folder.
 
-`tui` ignores existing files when it starts and updates Market Relay for each new, stable `.txt` export. Press `Ctrl+C` to stop it.
+Bare `iskrona` opens Market Relay; `iskrona tui` is the optional explicit equivalent, with the same flags. It ignores existing files when it starts and updates for each new, stable `.txt` export. Press `Ctrl+C` to stop it.
 
 ## Commands
 
 ```text
+iskrona [--path DIR] [--jumps N] [--copy buy|sell] [--no-color]
 iskrona doctor
 iskrona login [--station NAME_OR_ID]
 iskrona logout

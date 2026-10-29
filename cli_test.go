@@ -1,9 +1,84 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestDefaultCommandUsesTUIConfigAndOverrides(t *testing.T) {
+	doctorEnvironment(t)
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("[market]\nmax_jumps = -1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		flags []string
+		want  string
+	}{
+		{nil, "market.max_jumps must be nonnegative"},
+		{[]string{"--jumps", "0"}, "market.marketlogs is empty"},
+		{[]string{"--jumps", "0", "--path", filepath.Join(t.TempDir(), "missing")}, "market directory"},
+		{[]string{"--jumps", "0", "--copy", "invalid", "--no-color"}, "display.copy_mode must be buy or sell"},
+	} {
+		var rootError string
+		for _, prefix := range [][]string{nil, {"tui"}} {
+			args := append(append([]string{}, prefix...), tc.flags...)
+			var out, errOut strings.Builder
+			if code := execute(args, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), tc.want) {
+				t.Fatalf("execute(%q): code %d, stderr %q", args, code, errOut.String())
+			}
+			if prefix == nil {
+				rootError = errOut.String()
+			} else if errOut.String() != rootError {
+				t.Fatalf("root and tui validation differ: %q != %q", rootError, errOut.String())
+			}
+		}
+	}
+}
+
+func TestRootHelpAndArgumentValidation(t *testing.T) {
+	root := newRootCmd()
+	root.InitDefaultHelpCmd()
+	for _, cmd := range root.Commands() {
+		if cmd.Name() == "help" {
+			t.Fatal("help subcommand remains registered")
+		}
+	}
+	var out, errOut strings.Builder
+	if code := execute([]string{"--help"}, &out, &errOut); code != 0 {
+		t.Fatalf("help: code %d, stderr %q", code, errOut.String())
+	}
+	for _, flag := range []string{"--path", "--jumps", "--copy", "--no-color"} {
+		if !strings.Contains(out.String(), flag) {
+			t.Fatalf("root help missing %s", flag)
+		}
+	}
+	if strings.Contains(out.String(), "help [command]") || strings.Contains(out.String(), "Help about any command") {
+		t.Fatalf("help subcommand is listed: %s", out.String())
+	}
+	for _, args := range [][]string{{"-h"}, {"tui", "--help"}, {"doctor", "--help"}, {"login", "--help"}, {"logout", "--help"}, {"version", "--help"}} {
+		out.Reset()
+		errOut.Reset()
+		if code := execute(args, &out, &errOut); code != 0 || !strings.Contains(out.String(), "Usage:") {
+			t.Fatalf("execute(%q): code %d, stdout %q, stderr %q", args, code, out.String(), errOut.String())
+		}
+	}
+	for _, args := range [][]string{{"help"}, {"help", "tui"}, {"unknown"}, {"--no-color", "extra"}, {"tui", "extra"}} {
+		out.Reset()
+		errOut.Reset()
+		if code := execute(args, &out, &errOut); code != 2 || errOut.Len() == 0 {
+			t.Fatalf("execute(%q): code %d, stderr %q", args, code, errOut.String())
+		}
+	}
+}
 
 func TestExecuteVersionCommands(t *testing.T) {
 	for _, args := range [][]string{{"version"}, {"--version"}, {"-v"}} {
