@@ -17,7 +17,7 @@ For security-sensitive problems, follow [SECURITY.md](SECURITY.md).
    ```text
    go test ./...
    go vet ./...
-   go build .
+   go build ./cmd/iskrona
    ```
 
 4. Open a pull request using the provided template. Explain what changed, why, and how you tested it.

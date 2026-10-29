@@ -10,12 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: [self-hosted, Linux, ARM64]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7

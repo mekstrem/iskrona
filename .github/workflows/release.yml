@@ -28,7 +28,7 @@ jobs:
             arch="${target##*/}"
             binary="iskrona"
             if [ "$os" = "windows" ]; then binary="${binary}.exe"; fi
-            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$version" -o "dist/bin/$binary" .
+            GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=$version" -o "dist/bin/$binary" ./cmd/iskrona
             archive="dist/iskrona_${version}_${os}_${arch}.zip"
             zip -j "$archive" "dist/bin/$binary" README.md LICENSE
           done

@@ -13,19 +13,29 @@ func TestWatchDirectoryProcessesNewStableExport(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ticks := make(chan time.Time, 2)
+	baseline := make(chan struct{})
 	seen := make(chan string, 1)
+	done := make(chan error, 1)
 	go func() {
-		_ = WatchDirectory(ctx, dir, func(path string) error {
+		done <- watchDirectory(ctx, dir, func(path string) error {
 			seen <- path
 			cancel()
 			return nil
-		})
+		}, scanDirectory, ticks, func() { close(baseline) })
 	}()
-	time.Sleep(300 * time.Millisecond)
+	<-baseline
 	path := filepath.Join(dir, "The Forge-Test-2026.08.16 120000.txt")
 	if err := os.WriteFile(path, []byte("price,bid,jumps,\n1.00,False,0,\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	ticks <- time.Now()
+	select {
+	case got := <-seen:
+		t.Fatalf("processed an export before it was stable: %q", got)
+	default:
+	}
+	ticks <- time.Now()
 	select {
 	case got := <-seen:
 		if got != path {
@@ -33,6 +43,9 @@ func TestWatchDirectoryProcessesNewStableExport(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("watcher did not process new file")
+	}
+	if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+		t.Fatalf("WatchDirectory error = %v", err)
 	}
 }
 
@@ -55,14 +68,16 @@ func TestScanDirectoryIgnoresNonTextAndDirectories(t *testing.T) {
 
 func TestWatchDirectoryRetriesRetryableCallbackError(t *testing.T) {
 	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	ticks := make(chan time.Time, 3)
+	baseline := make(chan struct{})
 
 	attempts := make(chan int, 2)
 	done := make(chan error, 1)
 	go func() {
 		count := 0
-		done <- WatchDirectory(ctx, dir, func(string) error {
+		done <- watchDirectory(ctx, dir, func(string) error {
 			count++
 			attempts <- count
 			if count == 1 {
@@ -70,14 +85,15 @@ func TestWatchDirectoryRetriesRetryableCallbackError(t *testing.T) {
 			}
 			cancel()
 			return nil
-		})
+		}, scanDirectory, ticks, func() { close(baseline) })
 	}()
 
-	// Let WatchDirectory establish its initial baseline before creating the
-	// export, matching the documented behavior that existing files are ignored.
-	time.Sleep(300 * time.Millisecond)
+	<-baseline
 	if err := os.WriteFile(filepath.Join(dir, "retry.txt"), []byte("ready"), 0o600); err != nil {
 		t.Fatal(err)
+	}
+	for range 3 {
+		ticks <- time.Now()
 	}
 	for want := 1; want <= 2; want++ {
 		select {

@@ -26,6 +26,14 @@ type pendingFile struct {
 // or changed, stable .txt export. Existing files are baselined and ignored.
 // The callback runs synchronously, keeping output and clipboard updates ordered.
 func WatchDirectory(ctx context.Context, dir string, onFile func(string) error) error {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	return watchDirectory(ctx, dir, onFile, scanDirectory, ticker.C, nil)
+}
+
+// watchDirectory contains the polling loop with injectable time and scanning
+// seams so its stability behavior can be tested without wall-clock sleeps.
+func watchDirectory(ctx context.Context, dir string, onFile func(string) error, scan func(string) (map[string]fileSignature, error), ticks <-chan time.Time, afterBaseline func()) error {
 	info, err := os.Stat(dir)
 	if err != nil {
 		return fmt.Errorf("marketlogs directory %q: %w", dir, err)
@@ -34,20 +42,21 @@ func WatchDirectory(ctx context.Context, dir string, onFile func(string) error) 
 		return fmt.Errorf("marketlogs path %q is not a directory", dir)
 	}
 
-	processed, err := scanDirectory(dir)
+	processed, err := scan(dir)
 	if err != nil {
 		return err
 	}
+	if afterBaseline != nil {
+		afterBaseline()
+	}
 	pending := make(map[string]pendingFile)
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticker.C:
-			current, scanErr := scanDirectory(dir)
+		case <-ticks:
+			current, scanErr := scan(dir)
 			if scanErr != nil {
 				return scanErr
 			}

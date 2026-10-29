@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -479,12 +480,22 @@ func (s *recordingCredentialStore) Delete(service, user string) error {
 func useIsolatedUserConfigDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("APPDATA", dir)
+	var want string
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("APPDATA", dir)
+		want = filepath.Join(dir, "iskrona", "config.toml")
+	case "darwin":
+		t.Setenv("HOME", dir)
+		want = filepath.Join(dir, "Library", "Application Support", "iskrona", "config.toml")
+	default:
+		t.Setenv("XDG_CONFIG_HOME", dir)
+		want = filepath.Join(dir, "iskrona", "config.toml")
+	}
 	path, err := ConfigPath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(dir, "iskrona", "config.toml")
 	if path != want {
 		t.Fatalf("ConfigPath = %q, want %q", path, want)
 	}
