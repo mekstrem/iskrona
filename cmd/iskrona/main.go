@@ -46,63 +46,22 @@ func execute(args []string, out, errOut io.Writer) int {
 
 func newRootCmd() *cobra.Command {
 	var showVersion bool
-	root := &cobra.Command{
-		Use: "iskrona", Short: "EVE market signal console", SilenceErrors: true, SilenceUsage: true, Args: cobra.NoArgs,
-		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if showVersion {
-				fmt.Fprintln(cmd.OutOrStdout(), "ISKrona", version)
-				return nil
-			}
-			_ = cmd.Help()
-			return usageError("a command is required")
-		},
+	root := newMarketRelayCmd("iskrona", "EVE market signal console")
+	root.SilenceErrors, root.SilenceUsage = true, true
+	root.CompletionOptions.DisableDefaultCmd = true
+	root.SetHelpCommand(&cobra.Command{Hidden: true})
+	runRelay := root.RunE
+	root.RunE = func(cmd *cobra.Command, args []string) error {
+		if showVersion {
+			fmt.Fprintln(cmd.OutOrStdout(), "ISKrona", version)
+			return nil
+		}
+		return runRelay(cmd, args)
 	}
 	root.Flags().BoolVarP(&showVersion, "version", "v", false, "print ISKrona version")
 	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return usageError("%v", err) })
-	root.AddCommand(newSetupCmd(), newInspectCmd(), newTUICmd(), newWatchCmd(), newLoginCmd(), newLogoutCmd(), newVersionCmd())
+	root.AddCommand(newDoctorCmd(), newTUICmd(), newWatchCmd(), newLoginCmd(), newLogoutCmd(), newVersionCmd())
 	return root
-}
-
-func newSetupCmd() *cobra.Command {
-	return &cobra.Command{Use: "setup", Short: "Create or display ISKrona settings", Args: cobra.NoArgs, RunE: runSetup}
-}
-func runSetup(cmd *cobra.Command, _ []string) error {
-	p, err := ConfigPath()
-	if err != nil {
-		return commandError(err)
-	}
-	c, err := LoadConfig(p)
-	if err != nil {
-		return commandError(err)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "ISKrona settings created at %s\nMarket folder: %s\n", p, c.Market.Marketlogs)
-	return nil
-}
-
-func newInspectCmd() *cobra.Command {
-	var path string
-	cmd := &cobra.Command{Use: "inspect", Short: "Inspect one market export", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
-		if !cmd.Flags().Changed("path") || path == "" {
-			return usageError("inspect requires --path FILE")
-		}
-		return runInspect(cmd, path)
-	}}
-	cmd.Flags().StringVar(&path, "path", "", "market export file")
-	return cmd
-}
-func runInspect(cmd *cobra.Command, path string) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return commandError(err)
-	}
-	defer f.Close()
-	orders, err := ParseMarketCSV(f)
-	if err != nil {
-		return commandError(err)
-	}
-	fmt.Fprintf(cmd.OutOrStdout(), "ISKrona inspection\nOrders loaded: %d\n", len(orders))
-	return nil
 }
 
 func newTUICmd() *cobra.Command {
@@ -155,7 +114,7 @@ func runTUI(cmd *cobra.Command, overrides CLIOverrides) error {
 		return commandError(err)
 	}
 	ready := InitClipboard() == nil
-	if err := runMarketRelay(c, ready); err != nil {
+	if err := runMarketRelay(p, c, ready); err != nil {
 		return commandError(err)
 	}
 	return nil

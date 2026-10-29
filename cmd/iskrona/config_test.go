@@ -52,6 +52,36 @@ func TestSaveConfigReplaceFailurePreservesExistingFile(t *testing.T) {
 	}
 }
 
+func TestSaveMaxJumpsPreservesOtherConfig(t *testing.T) {
+	dir := t.TempDir()
+	marketlogs := filepath.Join(dir, "marketlogs")
+	if err := os.Mkdir(marketlogs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.toml")
+	want := Config{
+		Market:  MarketConfig{Marketlogs: marketlogs, MaxJumps: 9},
+		Fees:    FeeConfig{Broker: 0.025, SalesTax: 0.011},
+		Display: DisplayConfig{CopyMode: "buy", Color: false, Theme: "gallente"},
+		EVE:     EVEConfig{CharacterID: 42, CharacterName: "Capsuleer", StationID: 60003760, StationName: "Jita IV - Moon 4"},
+	}
+	initial := want
+	initial.Market.MaxJumps = 2
+	if err := SaveConfig(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveMaxJumps(path, want.Market.MaxJumps); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("saved config = %#v, want %#v", got, want)
+	}
+}
+
 func TestLoadConfigRejectsUnknownKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	if err := os.WriteFile(path, []byte("[market]\nmax_jumps = 1\nunknown = true\n"), 0o600); err != nil {
@@ -194,5 +224,60 @@ func TestConfigValidateFees(t *testing.T) {
 		if err := cfg.Validate(false); err == nil {
 			t.Fatalf("Validate(%#v) succeeded, want error", cfg)
 		}
+	}
+}
+
+func TestConfigThemeBackwardsCompatibility(t *testing.T) {
+	for _, data := range []string{
+		"[display]\ncopy_mode = \"buy\"\ncolor = true\n",
+		"marketlogs = \"\"\njumps = 4\nbroker_fee = 0.03\nsales_tax = 0.02\n",
+	} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := LoadConfig(path)
+		if err != nil || c.Display.Theme != "default" {
+			t.Fatalf("old config theme = %q, error = %v", c.Display.Theme, err)
+		}
+	}
+}
+
+func TestSaveThemeFailurePreservesConfig(t *testing.T) {
+	for _, failure := range []string{"invalid theme", "replace failure", "malformed file", "unknown key"} {
+		t.Run(failure, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := SaveConfig(path, DefaultConfig()); err != nil {
+				t.Fatal(err)
+			}
+			theme := "amarr"
+			switch failure {
+			case "invalid theme":
+				theme = "unknown"
+			case "replace failure":
+				previous := replaceConfigFile
+				replaceConfigFile = func(_, _ string) error { return errors.New("disk full") }
+				t.Cleanup(func() { replaceConfigFile = previous })
+			case "malformed file", "unknown key":
+				data := "[display]\ntheme = ["
+				if failure == "unknown key" {
+					data = "[display]\nextra = true\n"
+				}
+				if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := saveTheme(path, theme); err == nil {
+				t.Fatal("theme save succeeded, want error")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("failed save changed file: %q, error = %v", after, err)
+			}
+		})
 	}
 }
