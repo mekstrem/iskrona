@@ -11,7 +11,7 @@ Alternatively, build from source with Go 1.24 or later:
 ```text
 git clone https://github.com/mekstrem/iskrona.git
 cd iskrona
-go build .
+go build ./cmd/iskrona
 ```
 
 Prebuilt releases are available for Windows, macOS, and Linux on amd64 and arm64.
@@ -112,7 +112,7 @@ Bug reports and feature requests belong in [GitHub Issues](../../issues). Please
 ```text
 go test ./...
 go vet ./...
-go build .
+go build ./cmd/iskrona
 ```
 
 ## License and disclaimer
