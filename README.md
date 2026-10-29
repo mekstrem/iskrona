@@ -16,6 +16,26 @@ go build ./cmd/iskrona
 
 Prebuilt releases are available for Windows, macOS, and Linux on amd64 and arm64.
 
+### AI installation
+
+Give this prompt to your AI agent:
+
+```text
+Install ISKrona locally from https://github.com/mekstrem/iskrona.
+Use the latest release for my operating system and CPU, or build from source
+with Go 1.24 or later if needed. Put the executable on my PATH and verify the
+installation with `iskrona version`. Ask before making privileged changes.
+```
+
+To uninstall, give your AI agent this prompt:
+
+```text
+Uninstall ISKrona from my computer. Find and remove its executable and any
+PATH entry added specifically for it. Ask before making privileged changes or
+removing my configuration or other user data. Verify the executable is no
+longer available on my PATH.
+```
+
 ## Quick start
 
 1. In EVE Online, open a market item and use the market-export action to create a `.txt` export in the EVE `Marketlogs` folder.
