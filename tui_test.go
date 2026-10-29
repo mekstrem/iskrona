@@ -69,7 +69,7 @@ func TestMarketRelayDoesNotRepeatRoutineStatusInFooter(t *testing.T) {
 
 	m.snapshot = relayTestSnapshot()
 	m.status = "Market data updated"
-	if footer := m.footer(newMarketRelayStyles(false)); strings.Contains(footer, m.status) {
+	if footer := m.footer(newMarketRelayStyles(false, "default")); strings.Contains(footer, m.status) {
 		t.Fatalf("routine footer status = %q", footer)
 	}
 }
@@ -387,6 +387,8 @@ func relayKey(m marketRelayModel, key string) (marketRelayModel, tea.Cmd) {
 		k.Type = tea.KeyEsc
 	case "ctrl+c":
 		k.Type = tea.KeyCtrlC
+	case "f2":
+		k.Type = tea.KeyF2
 	}
 	updated, cmd := m.Update(k)
 	return updated.(marketRelayModel), cmd
@@ -658,7 +660,7 @@ func TestMarketRelayRenderedPreviews(t *testing.T) {
 }
 
 func TestMarketRelaySemanticColors(t *testing.T) {
-	styles := newMarketRelayStyles(true)
+	styles := newMarketRelayStyles(true, "default")
 	for _, tc := range []struct {
 		value float64
 		want  lipgloss.TerminalColor
@@ -672,7 +674,7 @@ func TestMarketRelaySemanticColors(t *testing.T) {
 		if got := styles.margin(tc.value).GetForeground(); got != tc.want {
 			t.Fatalf("value %g foreground = %#v, want %#v", tc.value, got, tc.want)
 		}
-		if got := newMarketRelayStyles(false).margin(tc.value).GetForeground(); got != (lipgloss.NoColor{}) {
+		if got := newMarketRelayStyles(false, "default").margin(tc.value).GetForeground(); got != (lipgloss.NoColor{}) {
 			t.Fatalf("no-color value %g has foreground %#v", tc.value, got)
 		}
 	}
@@ -688,14 +690,14 @@ func TestMarketRelayProfitColorsPreserveLayoutAndNoColor(t *testing.T) {
 			m.width, m.height = width, 30
 			m.snapshot = &marketRelaySnapshot{item: "PLEX", buyCents: 10_000, sellCents: sell, hasBuy: true, hasSell: true}
 			m.snapshot.margin = CalculateMargin(10_000, sell, 0, 0)
-			colored := m.profitTable(newMarketRelayStyles(true))
-			plain := m.profitTable(newMarketRelayStyles(false))
+			colored := m.profitTable(newMarketRelayStyles(true, "default"))
+			plain := m.profitTable(newMarketRelayStyles(false, "default"))
 			if ansi.Strip(colored) != plain || strings.Contains(plain, "\x1b[") || lipgloss.Width(colored) != lipgloss.Width(plain) {
 				t.Fatalf("profit styling changed layout at width %d:\n%s\n%s", width, colored, plain)
 			}
 			units := exampleUnits(10_000, 100_000_000)
 			_, _, net := profitExample(10_000, sell, units, 0, 0)
-			want := newMarketRelayStyles(true).margin(float64(net)).Render(FormatDisplayCents(net) + " ISK")
+			want := newMarketRelayStyles(true, "default").margin(float64(net)).Render(FormatDisplayCents(net) + " ISK")
 			row := strings.Split(colored, "\n")[1]
 			prefix, found := strings.CutSuffix(row, want)
 			if !found || strings.Contains(prefix, "\x1b[") {
@@ -718,6 +720,149 @@ func TestMarketRelayProfitColorsPreserveLayoutAndNoColor(t *testing.T) {
 					}
 				}
 				m.config.Display.Color = false
+			}
+		}
+	}
+}
+
+func TestMarketRelayCyclesThemes(t *testing.T) {
+	for _, initial := range []string{"", "default"} {
+		c := relayTestConfig()
+		c.Display.Theme = initial
+		m := newMarketRelayModel(c, true, make(chan tea.Msg))
+		var saved []string
+		m.saveTheme = func(theme string) error { saved = append(saved, theme); return nil }
+		for _, want := range []string{"caldari", "gallente", "minmatar", "amarr", "default"} {
+			var cmd tea.Cmd
+			m, cmd = relayKey(m, "f2")
+			if m.config.Display.Theme != want || m.runtime.configSnapshot().Display.Theme != want || m.isError || m.toast == "" || cmd == nil {
+				t.Fatalf("cycle to %s: config = %#v, status = %q", want, m.config, m.status)
+			}
+			// A new export and a distance change must not restore the old theme.
+			updated, _ := m.Update(marketRelayEvent{snapshot: relayTestSnapshot(), orders: []Order{}})
+			m = updated.(marketRelayModel)
+			m, _ = relayKey(m, "+")
+			if m.config.Display.Theme != want {
+				t.Fatal("runtime update lost theme")
+			}
+		}
+		if !slices.Equal(saved, []string{"caldari", "gallente", "minmatar", "amarr", "default"}) {
+			t.Fatalf("saved theme sequence = %v", saved)
+		}
+	}
+}
+
+func TestMarketRelayThemeSaveFailureIsSafe(t *testing.T) {
+	m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+	m.saveTheme = func(string) error { return errors.New("disk full") }
+	before := m.config
+	m, _ = relayKey(m, "f2")
+	if m.config != before || m.runtime.configSnapshot() != before || !m.isError || !strings.Contains(m.toast, "Could not save theme: disk full") || m.lastError != m.toast {
+		t.Fatalf("failed save changed state or hid error: %#v", m)
+	}
+}
+
+func TestMarketRelayThemeShortcutDoesNotConflict(t *testing.T) {
+	for _, sheet := range []string{"k", "i", "?"} {
+		m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+		m, _ = relayKey(m, sheet)
+		before := m.config
+		m, _ = relayKey(m, "f2")
+		if m.config != before {
+			t.Fatalf("F2 changed theme inside %s sheet", sheet)
+		}
+	}
+	m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+	before := m.config
+	m, _ = relayKey(m, "t")
+	if m.config != before {
+		t.Fatal("typing a letter changed theme")
+	}
+	m, _ = relayKey(m, "?")
+	if !strings.Contains(m.View(), "F2  next theme") {
+		t.Fatal("theme shortcut missing from help")
+	}
+}
+
+func TestMarketRelayThemePersistsWithoutOverrides(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	persisted := DefaultConfig()
+	persisted.Market = MarketConfig{Marketlogs: dir, MaxJumps: 7}
+	persisted.EVE = EVEConfig{CharacterID: 42, StationID: 60003760}
+	if err := SaveConfig(path, persisted); err != nil {
+		t.Fatal(err)
+	}
+	jumps, copyMode := 2, "buy"
+	effective, err := ResolveConfig(path, CLIOverrides{Jumps: &jumps, CopyMode: &copyMode, NoColor: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newMarketRelayModel(effective, true, make(chan tea.Msg))
+	m.saveTheme = func(theme string) error { return saveTheme(path, theme) }
+	// Preserve changes on disk since startup, not just the startup snapshot.
+	persisted.Fees.Broker = 0.04
+	if err := SaveConfig(path, persisted); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = relayKey(m, "f2")
+	if m.config.Display.Color || m.config.Display.CopyMode != copyMode || m.config.Market.MaxJumps != jumps {
+		t.Fatalf("theme change lost active overrides: %#v", m.config)
+	}
+	saved, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted.Display.Theme = "caldari"
+	if saved != persisted {
+		t.Fatalf("theme save changed unrelated settings: %#v, want %#v", saved, persisted)
+	}
+	restarted := newMarketRelayModel(saved, true, make(chan tea.Msg))
+	if restarted.config.Display.Theme != "caldari" {
+		t.Fatal("restarted model lost saved theme")
+	}
+}
+
+func TestMarketRelayThemeStylesAndLayout(t *testing.T) {
+	previousProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(previousProfile) })
+	defaults := newMarketRelayStyles(true, "default")
+	if defaults.title.GetForeground() != (lipgloss.AdaptiveColor{Light: "#6D4CBA", Dark: "#A78BFA"}) {
+		t.Fatal("default accent changed")
+	}
+	for _, theme := range marketRelayThemes {
+		styles := newMarketRelayStyles(true, theme)
+		if theme != "default" && styles.title.GetForeground() == defaults.title.GetForeground() {
+			t.Fatalf("%s did not change accent", theme)
+		}
+		for _, value := range []float64{-1, 0, 1} {
+			if styles.margin(value).GetForeground() != defaults.margin(value).GetForeground() {
+				t.Fatalf("%s changed semantic color for %g", theme, value)
+			}
+		}
+		for _, size := range [][2]int{{80, 18}, {120, 30}} {
+			for _, mode := range []string{"waiting", "dashboard", "help", "details", "palette"} {
+				m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+				m.config.Display.Theme = theme
+				m.width, m.height = size[0], size[1]
+				if mode != "waiting" {
+					m.snapshot = relayTestSnapshot()
+				}
+				m.showHelp, m.showDetails, m.showPalette = mode == "help", mode == "details", mode == "palette"
+				plain := m.View()
+				m.config.Display.Color = true
+				colored := m.View()
+				if strings.Contains(plain, "\x1b[") || ansi.Strip(colored) != plain || lipgloss.Width(colored) > size[0] || lipgloss.Height(colored) > size[1] {
+					t.Fatalf("%s %s at %v changed layout or violated no-color", theme, mode, size)
+				}
+				filter := styles.muted.Render("FILTER ≤ 0 jumps")
+				if !strings.Contains(colored, filter) {
+					t.Fatalf("%s filter does not use themed colors", theme)
+				}
+				if mode == "dashboard" && (!strings.Contains(colored, "F2 theme") || !strings.Contains(colored, "q quit")) {
+					t.Fatalf("shortcut footer clipped at %v: %s", size, plain)
+				}
 			}
 		}
 	}

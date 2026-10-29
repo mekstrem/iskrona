@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,12 @@ func (r *marketRelayRuntime) setMaxJumps(maxJumps int) {
 	r.mu.Unlock()
 }
 
+func (r *marketRelayRuntime) setTheme(theme string) {
+	r.mu.Lock()
+	r.config.Display.Theme = theme
+	r.mu.Unlock()
+}
+
 type marketRelayModel struct {
 	config        Config
 	events        <-chan tea.Msg
@@ -92,6 +99,7 @@ type marketRelayModel struct {
 	copyPrice     func(int64) error
 	runtime       *marketRelayRuntime
 	saveMaxJumps  func(int) error
+	saveTheme     func(string) error
 	orders        []Order
 	recent        []marketRelaySnapshot
 	showRecent    bool
@@ -118,7 +126,6 @@ func newMarketRelayModel(c Config, clipboardOK bool, events <-chan tea.Msg) mark
 
 func newMarketRelayModelWithRuntime(runtime *marketRelayRuntime, saveMaxJumps func(int) error, clipboardOK bool, events <-chan tea.Msg) marketRelayModel {
 	s := spinner.New(spinner.WithSpinner(spinner.Dot))
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "#6D4CBA", Dark: "#A78BFA"})
 	return marketRelayModel{
 		config:       runtime.configSnapshot(),
 		events:       events,
@@ -127,6 +134,7 @@ func newMarketRelayModelWithRuntime(runtime *marketRelayRuntime, saveMaxJumps fu
 		clipboardOK:  clipboardOK,
 		runtime:      runtime,
 		saveMaxJumps: saveMaxJumps,
+		saveTheme:    func(string) error { return nil },
 		copyPrice: func(value int64) error {
 			return CopyText(FormatCents(value))
 		},
@@ -150,7 +158,9 @@ func runMarketRelay(configPath string, c Config, clipboardOK bool) error {
 	}()
 
 	save := func(maxJumps int) error { return saveMaxJumps(configPath, maxJumps) }
-	_, err := tea.NewProgram(newMarketRelayModelWithRuntime(runtime, save, clipboardOK, events), tea.WithAltScreen()).Run()
+	model := newMarketRelayModelWithRuntime(runtime, save, clipboardOK, events)
+	model.saveTheme = func(theme string) error { return saveTheme(configPath, theme) }
+	_, err := tea.NewProgram(model, tea.WithAltScreen()).Run()
 	return err
 }
 
@@ -287,6 +297,9 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "k":
 			m.showPalette = true
+		case "f2":
+			m.cycleTheme()
+			return m.notify()
 		case "i":
 			m.showDetails = true
 		case "d":
@@ -372,6 +385,17 @@ func (m *marketRelayModel) adjustMaxJumps(delta int) {
 	m.status, m.isError = fmt.Sprintf("Max distance set to %d jumps", next), false
 }
 
+func (m *marketRelayModel) cycleTheme() {
+	next := marketRelayThemes[(max(0, slices.Index(marketRelayThemes, m.config.Display.Theme))+1)%len(marketRelayThemes)]
+	if err := m.saveTheme(next); err != nil {
+		m.status, m.isError = fmt.Sprintf("Could not save theme: %v", err), true
+		return
+	}
+	m.runtime.setTheme(next)
+	m.config = m.runtime.configSnapshot()
+	m.status, m.isError = "Theme: "+strings.ToUpper(next[:1])+next[1:], false
+}
+
 func (m *marketRelayModel) copy(side string) {
 	if m.snapshot == nil {
 		m.status, m.isError = "No market recommendation is available yet", true
@@ -404,7 +428,7 @@ func (m marketRelayModel) View() string {
 	if m.width > 0 && (m.width < marketRelayMinWidth || m.height < marketRelayMinHeight) {
 		return "\n  Market Relay needs at least 80 columns and 18 rows. Resize the terminal.\n"
 	}
-	styles := newMarketRelayStyles(m.config.Display.Color)
+	styles := newMarketRelayStyles(m.config.Display.Color, m.config.Display.Theme)
 	width, height := m.width, m.height
 	if width == 0 {
 		width = 120
@@ -436,6 +460,7 @@ func (m marketRelayModel) View() string {
 			"y  copy sell     b  copy buy     c  copy configured target",
 			"+  increase distance     -  decrease distance",
 			"d  recent exports     i  details     k  commands",
+			"F2  next theme: Default / Caldari / Gallente / Minmatar / Amarr",
 			"Compact spacing: toggle in commands; keeps prices and profit examples",
 			"?  help     q  quit (outside sheets)     Ctrl+C  always quit"}
 	case m.showDetails:
@@ -522,7 +547,9 @@ func relayClip(s string, width int) string {
 
 func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy bool) []string {
 	if m.snapshot == nil {
-		spin := m.spinner.View()
+		spinner := m.spinner
+		spinner.Style = styles.title.Bold(false)
+		spin := spinner.View()
 		if !m.config.Display.Color {
 			spin = ansi.Strip(spin)
 		}
@@ -640,7 +667,7 @@ func (m marketRelayModel) footer(styles marketRelayStyles) string {
 	if m.showPalette || m.showHelp || m.showDetails {
 		return styles.footer.Render("[Esc/q] close  [Ctrl+C] quit")
 	}
-	return styles.footer.Render("[y] sell b buy c target +/- filter d recent i info k cmd ? help q quit")
+	return styles.footer.Render("[y] sell b buy c target +/- d recent i info k cmd F2 theme ? help q quit")
 }
 
 type marketRelayStyles struct {
@@ -648,7 +675,7 @@ type marketRelayStyles struct {
 	margin                                                               func(float64) lipgloss.Style
 }
 
-func newMarketRelayStyles(color bool) marketRelayStyles {
+func newMarketRelayStyles(color bool, theme string) marketRelayStyles {
 	styles := marketRelayStyles{
 		title:    lipgloss.NewStyle().Bold(true),
 		heading:  lipgloss.NewStyle().Bold(true),
@@ -665,12 +692,42 @@ func newMarketRelayStyles(color bool) marketRelayStyles {
 		return styles
 	}
 	accent := lipgloss.AdaptiveColor{Light: "#6D4CBA", Dark: "#A78BFA"}
+	heading := lipgloss.AdaptiveColor{Light: "#5C5665", Dark: "#AAA4B0"}
+	muted := lipgloss.AdaptiveColor{Light: "#77717E", Dark: "#8A8491"}
+	surface := lipgloss.AdaptiveColor{Light: "#F0EDF4", Dark: "#25232B"}
+	selected := lipgloss.AdaptiveColor{Light: "#E4DFEC", Dark: "#35313E"}
+	switch theme {
+	case "caldari":
+		accent = lipgloss.AdaptiveColor{Light: "#235E86", Dark: "#85C4E8"}
+		heading = lipgloss.AdaptiveColor{Light: "#435D70", Dark: "#B1C6D5"}
+		muted = lipgloss.AdaptiveColor{Light: "#5E7180", Dark: "#94AAB9"}
+		surface = lipgloss.AdaptiveColor{Light: "#EAF0F5", Dark: "#202A33"}
+		selected = lipgloss.AdaptiveColor{Light: "#D6E4EF", Dark: "#2E4050"}
+	case "gallente":
+		accent = lipgloss.AdaptiveColor{Light: "#246C60", Dark: "#8DD4BD"}
+		heading = lipgloss.AdaptiveColor{Light: "#435F56", Dark: "#AFCDBF"}
+		muted = lipgloss.AdaptiveColor{Light: "#60756A", Dark: "#93AE9F"}
+		surface = lipgloss.AdaptiveColor{Light: "#EAF2EC", Dark: "#202E29"}
+		selected = lipgloss.AdaptiveColor{Light: "#D6E7DC", Dark: "#30463C"}
+	case "minmatar":
+		accent = lipgloss.AdaptiveColor{Light: "#9A482D", Dark: "#EAB08B"}
+		heading = lipgloss.AdaptiveColor{Light: "#725344", Dark: "#D2B9A8"}
+		muted = lipgloss.AdaptiveColor{Light: "#7D695C", Dark: "#B49C8A"}
+		surface = lipgloss.AdaptiveColor{Light: "#F4ECE5", Dark: "#302620"}
+		selected = lipgloss.AdaptiveColor{Light: "#EADACC", Dark: "#4A372B"}
+	case "amarr":
+		accent = lipgloss.AdaptiveColor{Light: "#846117", Dark: "#E3C77E"}
+		heading = lipgloss.AdaptiveColor{Light: "#6D6042", Dark: "#CEC2A1"}
+		muted = lipgloss.AdaptiveColor{Light: "#7A705A", Dark: "#B1A58A"}
+		surface = lipgloss.AdaptiveColor{Light: "#F5F0E3", Dark: "#2D291F"}
+		selected = lipgloss.AdaptiveColor{Light: "#EAE0C4", Dark: "#443C27"}
+	}
 	styles.title = styles.title.Foreground(accent)
-	styles.heading = styles.heading.Bold(false).Foreground(lipgloss.AdaptiveColor{Light: "#5C5665", Dark: "#AAA4B0"})
-	styles.muted = styles.muted.Foreground(lipgloss.AdaptiveColor{Light: "#77717E", Dark: "#8A8491"})
-	styles.footer = styles.footer.Foreground(lipgloss.AdaptiveColor{Light: "#5C5665", Dark: "#AAA4B0"})
-	styles.surface = styles.surface.Background(lipgloss.AdaptiveColor{Light: "#F0EDF4", Dark: "#25232B"})
-	styles.selected = styles.selected.Foreground(accent).Background(lipgloss.AdaptiveColor{Light: "#E4DFEC", Dark: "#35313E"})
+	styles.heading = styles.heading.Bold(false).Foreground(heading)
+	styles.muted = styles.muted.Foreground(muted)
+	styles.footer = styles.footer.Foreground(heading)
+	styles.surface = styles.surface.Background(surface)
+	styles.selected = styles.selected.Foreground(accent).Background(selected)
 	styles.margin = func(value float64) lipgloss.Style {
 		style := lipgloss.NewStyle().Bold(true)
 		if value > 0 {

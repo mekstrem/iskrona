@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/BurntSushi/toml"
 )
@@ -30,7 +31,10 @@ type FeeConfig struct {
 type DisplayConfig struct {
 	CopyMode string `toml:"copy_mode"`
 	Color    bool   `toml:"color"`
+	Theme    string `toml:"theme"`
 }
+
+var marketRelayThemes = []string{"default", "caldari", "gallente", "minmatar", "amarr"}
 
 // EVEConfig holds non-secret metadata for the character and NPC station used
 // to derive fees. The refresh token is kept in the operating system keychain.
@@ -57,7 +61,7 @@ type CLIOverrides struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Fees: FeeConfig{Broker: .02, SalesTax: .01}, Display: DisplayConfig{CopyMode: "sell", Color: true}}
+	return Config{Fees: FeeConfig{Broker: .02, SalesTax: .01}, Display: DisplayConfig{CopyMode: "sell", Color: true, Theme: "default"}}
 }
 func ConfigPath() (string, error) {
 	d, e := os.UserConfigDir()
@@ -203,6 +207,16 @@ func saveMaxJumps(path string, maxJumps int) error {
 	return SaveConfig(path, c)
 }
 
+// Reload saved settings so per-run overrides never become defaults.
+func saveTheme(path, theme string) error {
+	c, err := LoadConfig(path)
+	if err != nil {
+		return err
+	}
+	c.Display.Theme = theme
+	return SaveConfig(path, c)
+}
+
 func ResolveConfig(path string, o CLIOverrides) (Config, error) {
 	c, e := LoadConfig(path)
 	if e != nil {
@@ -240,6 +254,9 @@ func (c Config) Validate(required bool) error {
 	}
 	if c.Display.CopyMode != "buy" && c.Display.CopyMode != "sell" {
 		return fmt.Errorf("display.copy_mode must be buy or sell")
+	}
+	if c.Display.Theme != "" && !slices.Contains(marketRelayThemes, c.Display.Theme) {
+		return fmt.Errorf("display.theme must be default, caldari, gallente, minmatar or amarr")
 	}
 	if c.Market.Marketlogs == "" {
 		if required {
