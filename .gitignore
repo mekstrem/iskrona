@@ -1,0 +1,6 @@
+*.exe
+*.exe~
+.gocache/
+.DS_Store
+/iskrona
+/iskrona-dev
