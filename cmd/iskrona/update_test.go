@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,5 +53,32 @@ func TestLookupUpdateSkipsRequestForDevelopmentVersion(t *testing.T) {
 	defer server.Close()
 	if got := lookupUpdate(server.Client(), server.URL, "dev"); got != "" || called {
 		t.Fatalf("development version: got %q, request made: %v", got, called)
+	}
+}
+
+type updateRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f updateRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestLatestUpdateBuildVersion(t *testing.T) {
+	called := false
+	old := http.DefaultTransport
+	http.DefaultTransport = updateRoundTripper(func(r *http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"tag_name":"v2.0.0"}`)), Header: make(http.Header)}, nil
+	})
+	defer func() { http.DefaultTransport = old }()
+	got := latestUpdate()
+	switch version {
+	case "dev":
+		if got != "" || called {
+			t.Fatalf("development build: got %q, request made: %v", got, called)
+		}
+	case "1.2.3":
+		if got != "2.0.0" || !called {
+			t.Fatalf("release build: got %q, request made: %v", got, called)
+		}
+	default:
+		t.Skipf("test expects the default version or release test version, got %q", version)
 	}
 }
