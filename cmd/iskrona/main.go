@@ -10,9 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version is set to the release tag by the release workflow. Local builds use
-// the current development version.
-var version = "0.2.0"
+// version is set to the release tag by the release workflow.
+var version = "dev"
 
 type exitError struct {
 	code int

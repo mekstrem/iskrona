@@ -51,6 +51,12 @@ iskrona
 
 Bare `iskrona` opens Market Relay; `iskrona tui` is the optional explicit equivalent, with the same flags. It baselines existing files at startup and updates for new or changed `.txt` exports once stable. Press `Ctrl+C` to stop it.
 
+### Update checks
+
+Release builds of Market Relay (`iskrona`, `tui`, or the deprecated `watch` alias) check GitHub's releases API for a newer stable version in the background at startup. Source builds report version `dev` and do not check for updates unless built with a release version. The request has a short timeout; offline or failed checks are silently ignored and never delay the dashboard. No market exports or EVE credentials are sent. Other commands do not check for updates.
+
+When an update is available, the dashboard shows its version and https://github.com/mekstrem/iskrona/releases. Updates are never downloaded or installed automatically; use that page to update manually.
+
 ## Screenshots
 
 ![Market Relay dashboard showing buy and sell prices, net margin, and profit examples.](screenshots/market-relay.png)
