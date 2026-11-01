@@ -114,9 +114,13 @@ type marketRelayModel struct {
 	toastID       uint64
 	lastError     string
 	devExport     tea.Cmd
+	checkUpdate   func() string
+	updateVersion string
 }
 
 type marketRelayToastExpired uint64
+
+type marketRelayUpdateAvailable string
 
 type marketRelaySimulationResult struct {
 	path string
@@ -144,6 +148,7 @@ func newMarketRelayModelWithRuntime(runtime *marketRelayRuntime, saveMaxJumps fu
 		runtime:      runtime,
 		saveMaxJumps: saveMaxJumps,
 		saveTheme:    func(string) error { return nil },
+		checkUpdate:  latestUpdate,
 		copyPrice: func(value int64) error {
 			return CopyText(FormatCents(value))
 		},
@@ -300,7 +305,9 @@ func waitForMarketRelayEvent(events <-chan tea.Msg) tea.Cmd {
 }
 
 func (m marketRelayModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick, waitForMarketRelayEvent(m.events))
+	return tea.Batch(m.spinner.Tick, waitForMarketRelayEvent(m.events), func() tea.Msg {
+		return marketRelayUpdateAvailable(m.checkUpdate())
+	})
 }
 
 func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -385,6 +392,8 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
+	case marketRelayUpdateAvailable:
+		m.updateVersion = string(msg)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -585,7 +594,12 @@ func (m marketRelayModel) View() string {
 		view = append(view, "")
 	}
 	watching := "Watching: " + m.config.Market.Marketlogs
-	view = append(view, styles.muted.Render(strings.Repeat("─", contentWidth)), styles.muted.Render(relayClip(watching, contentWidth)), status, m.footer(styles))
+	divider := styles.muted.Render(strings.Repeat("─", contentWidth))
+	if m.updateVersion != "" {
+		const releasesURL = "https://github.com/mekstrem/iskrona/releases"
+		divider = styles.title.Render(relayClip("Update available: v"+m.updateVersion, contentWidth-len(releasesURL)-3) + " · " + releasesURL)
+	}
+	view = append(view, divider, styles.muted.Render(relayClip(watching, contentWidth)), status, m.footer(styles))
 	for i := range view {
 		view[i] = strings.Repeat(" ", inset) + relayClip(view[i], contentWidth)
 	}
