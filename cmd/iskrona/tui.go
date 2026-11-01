@@ -521,13 +521,17 @@ func (m marketRelayModel) View() string {
 			lines = append(lines, prefix+command)
 		}
 	case m.showHelp:
-		lines = []string{styles.heading.Render("KEYS  ·  Esc / q close"),
-			"y  copy sell     b  copy buy     c  copy configured target",
-			"+  increase distance     -  decrease distance",
-			"d  recent exports     i  details     k  commands",
-			"F2  next theme: Default / Caldari / Gallente / Minmatar / Amarr",
-			"Compact spacing: toggle in commands; keeps prices and profit examples",
-			"?  help     q  quit (outside sheets)     Ctrl+C  always quit"}
+		row := func(left, right string) string { return fmt.Sprintf("%-34s%s", left, right) }
+		lines = []string{styles.title.Render("KEYS") + styles.muted.Render("  ·  Close help to use shortcuts"),
+			styles.heading.Render(row("COPY PRICES", "VIEWS")),
+			row("y   Copy sell price", "d   Toggle recent exports"),
+			row("b   Copy buy price", "i   Details & profit examples"),
+			row("c   Copy configured target", "k   Commands & compact spacing"),
+			"",
+			styles.heading.Render(row("DISTANCE", "APP")),
+			row("+   Increase distance", "F2  Next theme"),
+			row("-   Decrease distance", "?   Open / close help"),
+			row("", "q   Quit outside sheets")}
 		if marketRelayDevHelp != "" {
 			lines = append(lines, marketRelayDevHelp)
 		}

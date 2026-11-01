@@ -87,7 +87,7 @@ func TestMarketRelayKeyActionsAndHelp(t *testing.T) {
 	}
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("?")})
 	withHelp := updated.(marketRelayModel)
-	if !strings.Contains(withHelp.View(), "KEYS") || !strings.Contains(withHelp.View(), "increase distance") {
+	if !strings.Contains(withHelp.View(), "KEYS") || !strings.Contains(withHelp.View(), "Increase distance") {
 		t.Fatalf("help view = %q", withHelp.View())
 	}
 
@@ -108,6 +108,45 @@ func TestMarketRelayKeyActionsAndHelp(t *testing.T) {
 	m.copy("buy")
 	if !m.isError || m.status != "Clipboard unavailable" {
 		t.Fatalf("unavailable clipboard status = %q, error %t", m.status, m.isError)
+	}
+}
+
+func TestMarketRelayHelpGroupsFitTerminal(t *testing.T) {
+	rows := [][2]string{
+		{"COPY PRICES", "VIEWS"},
+		{"y   Copy sell price", "d   Toggle recent exports"},
+		{"b   Copy buy price", "i   Details & profit examples"},
+		{"c   Copy configured target", "k   Commands & compact spacing"},
+		{"DISTANCE", "APP"},
+		{"+   Increase distance", "F2  Next theme"},
+		{"-   Decrease distance", "?   Open / close help"},
+	}
+	for _, size := range [][2]int{{80, 18}, {100, 22}, {120, 30}, {180, 24}} {
+		m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+		m.width, m.height = size[0], size[1]
+		m, _ = relayKey(m, "?")
+		view := m.View()
+		for _, row := range rows {
+			found := false
+			for _, line := range strings.Split(view, "\n") {
+				left, right := strings.Index(line, row[0]), strings.Index(line, row[1])
+				if left >= 0 && right-left == 34 {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("help row %q / %q missing or misaligned at %v:\n%s", row[0], row[1], size, view)
+			}
+		}
+		for _, want := range []string{"KEYS", "Close help to use shortcuts", "q   Quit outside sheets", "[Esc/q] close  [Ctrl+C] quit", marketRelayDevHelp} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("help missing %q at %v:\n%s", want, size, view)
+			}
+		}
+		if lipgloss.Width(view) > size[0] || lipgloss.Height(view) > size[1] {
+			t.Fatalf("help overflows %v:\n%s", size, view)
+		}
 	}
 }
 
@@ -855,7 +894,7 @@ func TestMarketRelayThemeShortcutDoesNotConflict(t *testing.T) {
 		t.Fatal("typing a letter changed theme")
 	}
 	m, _ = relayKey(m, "?")
-	if !strings.Contains(m.View(), "F2  next theme") {
+	if !strings.Contains(m.View(), "F2  Next theme") {
 		t.Fatal("theme shortcut missing from help")
 	}
 }
