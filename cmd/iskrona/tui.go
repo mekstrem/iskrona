@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -111,6 +112,8 @@ type marketRelayModel struct {
 	dense         bool
 	showPalette   bool
 	showDetails   bool
+	detailsUnits  int64
+	detailsTyping bool
 	commandIndex  int
 	toast         string
 	toastID       uint64
@@ -151,6 +154,7 @@ func newMarketRelayModelWithRuntime(runtime *marketRelayRuntime, saveMaxJumps fu
 		runtime:      runtime,
 		saveMaxJumps: saveMaxJumps,
 		saveTheme:    func(string) error { return nil },
+		detailsUnits: 1,
 		checkUpdate:  latestUpdate,
 		copyPrice: func(value int64) error {
 			return CopyText(FormatCents(value))
@@ -314,6 +318,43 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.showPalette || m.showDetails || m.showHelp {
 			if key == "esc" || key == "q" || (key == "?" && m.showHelp) || (key == "i" && m.showDetails) || (key == "k" && m.showPalette) {
 				m.showPalette, m.showDetails, m.showHelp = false, false, false
+				m.detailsTyping = false
+				return m, nil
+			}
+			if m.showDetails {
+				switch key {
+				case "+":
+					m.detailsTyping = false
+					if m.detailsUnits < math.MaxInt64 {
+						m.detailsUnits++
+					}
+				case "-":
+					m.detailsTyping = false
+					if m.detailsUnits > 1 {
+						m.detailsUnits--
+					}
+				case "enter":
+					m.detailsTyping = false
+				case "backspace", "delete":
+					m.detailsUnits /= 10
+					m.detailsTyping = m.detailsUnits > 0
+					m.detailsUnits = max(1, m.detailsUnits)
+				default:
+					if msg.Type != tea.KeyRunes || msg.Alt || len(msg.Runes) == 0 {
+						return m, nil
+					}
+					digits := string(msg.Runes)
+					if strings.Trim(digits, "0123456789") != "" {
+						return m, nil
+					}
+					if m.detailsTyping {
+						digits = strconv.FormatInt(m.detailsUnits, 10) + digits
+					}
+					if units, err := strconv.ParseInt(digits, 10, 64); err == nil {
+						m.detailsUnits = max(1, units)
+						m.detailsTyping = units > 0
+					}
+				}
 				return m, nil
 			}
 			if !m.showPalette {
@@ -543,7 +584,7 @@ func (m marketRelayModel) View() string {
 		lines = []string{styles.title.Render("KEYS") + styles.muted.Render("  ·  Close help to use shortcuts"),
 			styles.heading.Render(row("COPY PRICES", "VIEWS")),
 			row("y   Copy sell price", "d   Toggle recent exports"),
-			row("b   Copy buy price", "i   Details & profit examples"),
+			row("b   Copy buy price", "i   Details (type qty or +/-)"),
 			row("c   Copy configured target", "k   Commands & compact spacing"),
 			"",
 			styles.heading.Render(row("DISTANCE", "APP")),
@@ -568,6 +609,9 @@ func (m marketRelayModel) View() string {
 	}
 	if overlay {
 		sheetWidth := min(contentWidth, 72)
+		if m.showDetails {
+			sheetWidth = contentWidth
+		}
 		for i := range lines {
 			lines[i] = relayClip(lines[i], sheetWidth-4)
 		}
@@ -702,7 +746,7 @@ func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy b
 		lines = append(lines, styles.heading.Render("PROFIT EXAMPLES"), styles.muted.Render(fmt.Sprintf("Buy broker %.2f%% · Sell broker %.2f%% · Tax %.2f%%", s.buyBroker*100, s.broker*100, s.tax*100)), "")
 		lines = append(lines, strings.Split(m.profitTable(styles), "\n")...)
 	} else {
-		lines = append(lines, "", styles.muted.Render("i  profit examples & fees  ·  d  recent exports"))
+		lines = append(lines, "", styles.muted.Render("i  trade costs & fees  ·  d  recent exports"))
 	}
 	return lines
 }
@@ -761,10 +805,13 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 }
 
 func (m marketRelayModel) footer(styles marketRelayStyles) string {
-	if m.showPalette || m.showHelp || m.showDetails {
+	if m.showDetails {
+		return styles.footer.Render("[0-9] qty ≥1 [Enter] done [Bksp] edit [+/-] qty [Esc/q] close [Ctrl+C] quit")
+	}
+	if m.showPalette || m.showHelp {
 		return styles.footer.Render("[Esc/q] close  [Ctrl+C] quit")
 	}
-	return styles.footer.Render("[y] sell b buy c target +/- d recent i info k cmd F2 theme ? help q quit")
+	return styles.footer.Render("y sell b buy c target +/- jumps d recent i info k cmd F2 theme ? help q quit")
 }
 
 type marketRelayStyles struct {

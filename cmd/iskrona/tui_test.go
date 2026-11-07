@@ -38,7 +38,7 @@ func TestMarketRelayRendersSnapshotWithoutColor(t *testing.T) {
 	m.width, m.height = 120, 30
 
 	view := m.View()
-	for _, want := range []string{"ISKrona / MARKET RELAY", "PLEX", "SELL PRICE", "BUY PRICE", "PROFIT EXAMPLES", "NET MARGIN", "[y] sell"} {
+	for _, want := range []string{"ISKrona / MARKET RELAY", "PLEX", "SELL PRICE", "BUY PRICE", "PROFIT EXAMPLES", "NET MARGIN", "y sell"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view does not contain %q:\n%s", want, view)
 		}
@@ -115,7 +115,7 @@ func TestMarketRelayHelpGroupsFitTerminal(t *testing.T) {
 	rows := [][2]string{
 		{"COPY PRICES", "VIEWS"},
 		{"y   Copy sell price", "d   Toggle recent exports"},
-		{"b   Copy buy price", "i   Details & profit examples"},
+		{"b   Copy buy price", "i   Details (type qty or +/-)"},
 		{"c   Copy configured target", "k   Commands & compact spacing"},
 		{"DISTANCE", "APP"},
 		{"+   Increase distance", "F2  Next theme"},
@@ -520,6 +520,10 @@ func relayKey(m marketRelayModel, key string) (marketRelayModel, tea.Cmd) {
 	switch key {
 	case "enter":
 		k.Type = tea.KeyEnter
+	case "backspace":
+		k.Type = tea.KeyBackspace
+	case "delete":
+		k.Type = tea.KeyDelete
 	case "up":
 		k.Type = tea.KeyUp
 	case "down":
@@ -730,6 +734,9 @@ func TestMarketRelayViewBoundsAndMonochrome(t *testing.T) {
 				m.dense, m.showRecent = mode == "dense", mode == "recent"
 				m.showHelp, m.showDetails, m.showPalette = mode == "help", mode == "details", mode == "palette"
 				view := m.View()
+				if populated && size[0] == 80 && (mode == "normal" || mode == "dense") && !strings.Contains(view, "i  trade costs & fees  ·  d  recent exports") {
+					t.Fatalf("compact Details hint missing or misleading:\n%s", view)
+				}
 				if mode == "normal" && !strings.Contains(strings.Split(view, "\n")[size[1]-1], "q quit") {
 					t.Fatalf("quit control clipped at %v:\n%s", size, view)
 				}
@@ -775,7 +782,7 @@ func TestMarketRelayRoomyHierarchy(t *testing.T) {
 		if !strings.Contains(lines[labelRow], "BUY PRICE") || !strings.Contains(lines[labelRow], "NET MARGIN") {
 			t.Fatal("three recommendation zones missing")
 		}
-		if find("PROFIT EXAMPLES") <= valueRow+1 || find("[y] sell") != size[1]-1 {
+		if find("PROFIT EXAMPLES") <= valueRow+1 || find("y sell") != size[1]-1 {
 			t.Fatal("profit section or anchored footer missing")
 		}
 		for _, line := range lines {
@@ -858,6 +865,10 @@ func TestMarketRelayProfitColorsPreserveLayoutAndNoColor(t *testing.T) {
 			}
 			for _, details := range []bool{false, true} {
 				m.showDetails = details
+				if details {
+					_, _, net, _ := profitExample(10_000, sell, m.detailsUnits, 0, 0, 0, "npc")
+					want = newMarketRelayStyles(true, "default").margin(float64(net)).Render(FormatDisplayCents(net) + " ISK")
+				}
 				plainView := m.View()
 				if strings.Contains(plainView, "\x1b[") {
 					t.Fatal("no-color View contains ANSI in a color-capable terminal")
