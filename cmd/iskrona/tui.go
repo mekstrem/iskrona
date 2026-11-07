@@ -316,6 +316,12 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		if m.showPalette || m.showDetails || m.showHelp {
+			if m.showHelp && m.showDetails {
+				if key == "?" || key == "esc" || key == "q" {
+					m.showHelp = false
+				}
+				return m, nil
+			}
 			if key == "esc" || key == "q" || (key == "?" && m.showHelp) || (key == "i" && m.showDetails) || (key == "k" && m.showPalette) {
 				m.showPalette, m.showDetails, m.showHelp = false, false, false
 				m.detailsTyping = false
@@ -323,6 +329,8 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if m.showDetails {
 				switch key {
+				case "?":
+					m.showHelp = true
 				case "+":
 					m.detailsTyping = false
 					if m.detailsUnits < math.MaxInt64 {
@@ -579,6 +587,8 @@ func (m marketRelayModel) View() string {
 			}
 			lines = append(lines, prefix+command)
 		}
+	case m.showHelp && m.showDetails:
+		lines = m.detailsHelp(styles)
 	case m.showHelp:
 		row := func(left, right string) string { return fmt.Sprintf("%-34s%s", left, right) }
 		lines = []string{styles.title.Render("KEYS") + styles.muted.Render("  ·  Close help to use shortcuts"),
@@ -805,8 +815,11 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 }
 
 func (m marketRelayModel) footer(styles marketRelayStyles) string {
+	if m.showHelp && m.showDetails {
+		return styles.footer.Render("[?/Esc/q] back to Details  [Ctrl+C] quit")
+	}
 	if m.showDetails {
-		return styles.footer.Render("[0-9] qty ≥1 [Enter] done [Bksp] edit [+/-] qty [Esc/q] close [Ctrl+C] quit")
+		return styles.footer.Render("[+/-] qty  [?] keys  [Esc/q] close  [Ctrl+C] quit")
 	}
 	if m.showPalette || m.showHelp {
 		return styles.footer.Render("[Esc/q] close  [Ctrl+C] quit")

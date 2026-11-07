@@ -58,14 +58,14 @@ func TestMarketRelayUpdateNoticeFitsTerminal(t *testing.T) {
 	const releasesURL = "https://github.com/mekstrem/iskrona/releases"
 	for _, size := range [][2]int{{80, 18}, {100, 22}, {120, 30}, {180, 24}} {
 		for _, version := range []string{"1.2.3", strings.Repeat("1234567890", 10)} {
-			for _, mode := range []string{"waiting", "dashboard", "recent", "help", "details", "palette"} {
+			for _, mode := range []string{"waiting", "dashboard", "recent", "help", "details", "details-help", "palette"} {
 				m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
 				m.width, m.height, m.updateVersion = size[0], size[1], version
 				if mode != "waiting" {
 					m.snapshot = relayTestSnapshot()
 				}
 				m.showRecent = mode == "recent"
-				m.showHelp, m.showDetails, m.showPalette = mode == "help", mode == "details", mode == "palette"
+				m.showHelp, m.showDetails, m.showPalette = mode == "help" || mode == "details-help", mode == "details" || mode == "details-help", mode == "palette"
 				view := m.View()
 				lines := strings.Split(view, "\n")
 				if lipgloss.Width(view) > size[0] || lipgloss.Height(view) != size[1] || strings.Contains(view, "\x1b[") {

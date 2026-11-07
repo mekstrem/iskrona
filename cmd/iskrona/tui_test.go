@@ -718,7 +718,7 @@ func TestMarketRelayRecentSnapshotsAndDenseCap(t *testing.T) {
 func TestMarketRelayViewBoundsAndMonochrome(t *testing.T) {
 	for _, size := range [][2]int{{80, 18}, {100, 22}, {120, 30}, {180, 24}} {
 		for _, populated := range []bool{false, true} {
-			for _, mode := range []string{"normal", "dense", "recent", "help", "details", "palette"} {
+			for _, mode := range []string{"normal", "dense", "recent", "help", "details", "details-help", "palette"} {
 				m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
 				m.width, m.height = size[0], size[1]
 				m.config.Market.Marketlogs = strings.Repeat("long/path/界/", 40)
@@ -732,7 +732,7 @@ func TestMarketRelayViewBoundsAndMonochrome(t *testing.T) {
 					}
 				}
 				m.dense, m.showRecent = mode == "dense", mode == "recent"
-				m.showHelp, m.showDetails, m.showPalette = mode == "help", mode == "details", mode == "palette"
+				m.showHelp, m.showDetails, m.showPalette = mode == "help" || mode == "details-help", mode == "details" || mode == "details-help", mode == "palette"
 				view := m.View()
 				if populated && size[0] == 80 && (mode == "normal" || mode == "dense") && !strings.Contains(view, "i  trade costs & fees  ·  d  recent exports") {
 					t.Fatalf("compact Details hint missing or misleading:\n%s", view)
@@ -1006,14 +1006,14 @@ func TestMarketRelayThemeStylesAndLayout(t *testing.T) {
 			}
 		}
 		for _, size := range [][2]int{{80, 18}, {120, 30}} {
-			for _, mode := range []string{"waiting", "dashboard", "help", "details", "palette"} {
+			for _, mode := range []string{"waiting", "dashboard", "help", "details", "details-help", "palette"} {
 				m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
 				m.config.Display.Theme = theme
 				m.width, m.height = size[0], size[1]
 				if mode != "waiting" {
 					m.snapshot = relayTestSnapshot()
 				}
-				m.showHelp, m.showDetails, m.showPalette = mode == "help", mode == "details", mode == "palette"
+				m.showHelp, m.showDetails, m.showPalette = mode == "help" || mode == "details-help", mode == "details" || mode == "details-help", mode == "palette"
 				plain := m.View()
 				m.config.Display.Color = true
 				colored := m.View()
