@@ -17,7 +17,7 @@ func (m marketRelayModel) details(styles marketRelayStyles) []string {
 	if !s.hasBuy || !s.hasSell {
 		return append(lines, "Trade costs need both an eligible buy and sell order.")
 	}
-	units := exampleUnits(s.buyCents, 100_000_000)
+	units := int64(1)
 	cost, revenue, net, ok := profitExample(s.buyCents, s.sellCents, units, s.buyBroker, s.broker, s.tax)
 	if !ok {
 		return append(lines, "Trade cost example exceeds the supported amount.")
