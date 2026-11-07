@@ -153,12 +153,12 @@ func exampleUnits(unitPrice, targetBudgetCents int64) int64 {
 	}
 	return lead * scale
 }
-func profitExample(buyCents, sellCents, units int64, buyBroker, broker, tax float64) (cost, revenue, profit int64, ok bool) {
+func profitExample(buyCents, sellCents, units int64, buyBroker, broker, tax float64, location string) (cost, revenue, profit int64, ok bool) {
 	if units <= 0 || buyCents <= 0 || sellCents <= 0 || buyCents > math.MaxInt64/units || sellCents > math.MaxInt64/units {
 		return 0, 0, 0, false
 	}
 	buyValue, sellValue := buyCents*units, sellCents*units
-	costFloat := math.Round(float64(buyValue) * (1 + buyBroker))
+	costFloat := math.Round(buyOrderCost(float64(buyValue), buyBroker, location))
 	revenueFloat := math.Round(float64(sellValue) * (1 - broker - tax))
 	if math.IsNaN(costFloat) || math.IsNaN(revenueFloat) || costFloat < 0 || revenueFloat < 0 || costFloat >= 0x1p63 || revenueFloat >= 0x1p63 {
 		return 0, 0, 0, false

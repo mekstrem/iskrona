@@ -102,29 +102,38 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 		return commandError(err)
 	}
 	broker, tax, accounting, brokerRelations := deriveFees(skills, standings, station)
-	cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
-	cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
-	key := credentialKey(character.ID)
-	previous, getErr := c.store.Get("iskrona", key)
-	if getErr != nil && !errors.Is(getErr, keyring.ErrNotFound) {
-		return commandError(fmt.Errorf("read EVE authorization from credential store: %w", getErr))
-	}
-	if err := c.store.Set("iskrona", key, token.RefreshToken); err != nil {
-		return commandError(fmt.Errorf("save EVE authorization in credential store: %w", err))
-	}
-	if err := SaveConfig(path, cfg); err != nil {
-		var rollbackErr error
-		if getErr == nil {
-			rollbackErr = c.store.Set("iskrona", key, previous)
-		} else {
-			rollbackErr = c.store.Delete("iskrona", key)
-			if errors.Is(rollbackErr, keyring.ErrNotFound) {
-				rollbackErr = nil
+	if err := withConfigLock(path, func(path string) error {
+		cfg, _, err := loadConfig(path)
+		if err != nil {
+			return err
+		}
+		key := credentialKey(character.ID)
+		previous, getErr := c.store.Get("iskrona", key)
+		if getErr != nil && !errors.Is(getErr, keyring.ErrNotFound) {
+			return fmt.Errorf("read EVE authorization from credential store: %w", getErr)
+		}
+		if err := c.store.Set("iskrona", key, token.RefreshToken); err != nil {
+			return fmt.Errorf("save EVE authorization in credential store: %w", err)
+		}
+		cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
+		cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
+		if err := saveConfig(path, cfg); err != nil {
+			var rollbackErr error
+			if getErr == nil {
+				rollbackErr = c.store.Set("iskrona", key, previous)
+			} else {
+				rollbackErr = c.store.Delete("iskrona", key)
+				if errors.Is(rollbackErr, keyring.ErrNotFound) {
+					rollbackErr = nil
+				}
 			}
+			if rollbackErr != nil {
+				return errors.Join(err, fmt.Errorf("restore EVE authorization in credential store: %w", rollbackErr))
+			}
+			return err
 		}
-		if rollbackErr != nil {
-			return commandError(errors.Join(err, fmt.Errorf("restore EVE authorization in credential store: %w", rollbackErr)))
-		}
+		return nil
+	}); err != nil {
 		return commandError(err)
 	}
 	fmt.Fprintf(out, "EVE fees updated\nCharacter: %s\nStation: %s\nAccounting: %d\nBroker Relations: %d\nBroker fee: %.3f%%\nSales tax: %.3f%%\n", character.Name, station.Name, accounting, brokerRelations, broker*100, tax*100)
@@ -150,17 +159,15 @@ func (c *eveClient) logout(out io.Writer) error {
 	if err != nil {
 		return commandError(err)
 	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		return commandError(err)
-	}
-	if cfg.EVE.CharacterID != 0 {
-		if err := c.store.Delete("iskrona", credentialKey(cfg.EVE.CharacterID)); err != nil && !errors.Is(err, keyring.ErrNotFound) {
-			return commandError(fmt.Errorf("remove EVE authorization: %w", err))
+	if err := updateConfig(path, func(cfg *Config) error {
+		if cfg.EVE.CharacterID != 0 {
+			if err := c.store.Delete("iskrona", credentialKey(cfg.EVE.CharacterID)); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+				return fmt.Errorf("remove EVE authorization: %w", err)
+			}
 		}
-	}
-	cfg.EVE = EVEConfig{}
-	if err := SaveConfig(path, cfg); err != nil {
+		cfg.EVE = EVEConfig{}
+		return nil
+	}); err != nil {
 		return commandError(err)
 	}
 	fmt.Fprintln(out, "EVE authorization removed")
@@ -401,7 +408,7 @@ func startCallbackServer(expectedState string) (*http.Server, <-chan callbackRes
 			result <- callbackResult{err: errors.New("EVE login callback has no authorization code")}
 			return
 		}
-		fmt.Fprintln(w, "EVE login complete. You can close this page.")
+		fmt.Fprintln(w, "EVE authorization received. Return to the terminal for the final result. You can close this page.")
 		result <- callbackResult{code: code}
 	})
 	ln, err := net.Listen("tcp", server.Addr)

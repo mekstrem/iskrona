@@ -18,16 +18,16 @@ func TestMarketRelayDetailsCostBreakdown(t *testing.T) {
 		units                  int64
 		values                 []int64
 	}{
-		{"profit", 10_000, 20_000, .005, .02, .01, 10_000, []int64{100_000_000, 500_000, 100_500_000, 200_000_000, 6_000_000, 194_000_000, 93_500_000}},
-		{"loss", 10_000, 10_000, .02, .02, .01, 10_000, []int64{100_000_000, 2_000_000, 102_000_000, 100_000_000, 3_000_000, 97_000_000, -5_000_000}},
-		{"no fees", 10_000, 20_000, 0, 0, 0, 10_000, []int64{100_000_000, 0, 100_000_000, 200_000_000, 0, 200_000_000, 100_000_000}},
+		{"profit", 10_000, 20_000, .005, .02, .01, 1, []int64{10_000, 50, 10_050, 20_000, 600, 19_400, 9_350}},
+		{"loss", 10_000, 10_000, .02, .02, .01, 1, []int64{10_000, 200, 10_200, 10_000, 300, 9_700, -500}},
+		{"no fees", 10_000, 20_000, 0, 0, 0, 1, []int64{10_000, 0, 10_000, 20_000, 0, 20_000, 10_000}},
 		{"rounded fees", 200_000_001, 300_000_001, .02, .02, .01, 1, []int64{200_000_001, 4_000_000, 204_000_001, 300_000_001, 9_000_000, 291_000_001, 87_000_000}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
 			m.snapshot = &marketRelaySnapshot{buyCents: tc.buy, sellCents: tc.sell, hasBuy: true, hasSell: true, buyBroker: tc.buyBroker, broker: tc.broker, tax: tc.tax}
 			lines := m.details(newMarketRelayStyles(false, "default"))
-			if !strings.Contains(lines[3], FormatDisplayUnits(tc.units)+" units") {
+			if !strings.Contains(lines[3], FormatDisplayUnits(tc.units)+" unit") {
 				t.Fatalf("quantity = %q", lines[3])
 			}
 			for i, label := range []string{"Purchase value", "Buy broker fee", "Total buy cost", "Sale value", "Sell broker + sales tax", "Net proceeds", "Net profit after fees"} {
@@ -40,6 +40,44 @@ func TestMarketRelayDetailsCostBreakdown(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDetailsStructureSurchargeNotice(t *testing.T) {
+	for _, tc := range []struct {
+		location string
+		rate     float64
+		notice   bool
+	}{
+		{"structure", 0, true},
+		{"structure", .004, true},
+		{"structure", .005, false},
+		{"npc", 0, false},
+	} {
+		for _, snapshot := range []bool{false, true} {
+			c := relayTestConfig()
+			c.Fees.BuyLocation, c.Fees.BuyBroker = tc.location, tc.rate
+			m := newMarketRelayModel(c, true, make(chan tea.Msg))
+			if snapshot {
+				m.snapshot = &marketRelaySnapshot{buyLocation: tc.location, buyBroker: tc.rate}
+			}
+			text := strings.Join(m.details(newMarketRelayStyles(false, "default")), "\n")
+			if got := strings.Contains(text, "0.5% SCC + 100 ISK minimum"); got != tc.notice {
+				t.Errorf("location=%s rate=%g snapshot=%v: notice=%v", tc.location, tc.rate, snapshot, got)
+			}
+		}
+	}
+}
+
+func TestMarketRelayDetailsOneUnitAtCompactSize(t *testing.T) {
+	m := newMarketRelayModel(relayTestConfig(), false, make(chan tea.Msg))
+	m.width, m.height, m.showDetails = 80, 18, true
+	m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: 10_000, sellCents: 20_000, buyBroker: .005, broker: .02, tax: .01}
+	view := m.View()
+	for _, want := range []string{"TRADE COSTS  ·  1 unit", "Purchase value           100.00", "Net profit after fees    93.50 ISK"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("compact details missing %q:\n%s", want, view)
+		}
 	}
 }
 
@@ -77,7 +115,7 @@ func TestMarketRelayDetailsMissingSide(t *testing.T) {
 func TestMarketRelayDetailsDoesNotShowOverflowedCosts(t *testing.T) {
 	for _, prices := range [][2]int64{{1, math.MaxInt64}, {math.MaxInt64, math.MaxInt64}} {
 		m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
-		m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: prices[0], sellCents: prices[1], broker: .02, tax: .01}
+		m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: prices[0], sellCents: prices[1]}
 		m.width, m.height, m.showDetails = 80, 18, true
 		view := m.View()
 		if !strings.Contains(view, "exceeds the supported amount") || strings.Contains(view, "Total buy cost") {
@@ -96,7 +134,7 @@ func TestProfitExamplesRejectOverflow(t *testing.T) {
 		{math.MaxInt64 / 2, 1, 1, 2, 0, 0},
 		{1, 1, 1, math.NaN(), 0, 0},
 	} {
-		if _, _, _, ok := profitExample(tc.buy, tc.sell, tc.units, tc.buyBroker, tc.broker, tc.tax); ok {
+		if _, _, _, ok := profitExample(tc.buy, tc.sell, tc.units, tc.buyBroker, tc.broker, tc.tax, "npc"); ok {
 			t.Fatalf("accepted overflow: %+v", tc)
 		}
 	}
@@ -112,6 +150,20 @@ func TestProfitExamplesRejectOverflow(t *testing.T) {
 		m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: 1, sellCents: math.MaxInt64}
 		if table := m.profitTable(newMarketRelayStyles(false, "default")); strings.Count(table, "exceeds the supported amount") != 3 {
 			t.Fatalf("width %d: overflowed profit table:\n%s", width, table)
+		}
+	}
+}
+
+func TestProfitTableIncludesOneUnit(t *testing.T) {
+	for _, width := range []int{80, 120} {
+		for _, buy := range []int64{10_000, 200_000_000} {
+			m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+			m.width = width
+			m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: buy, sellCents: buy * 2}
+			lines := strings.Split(m.profitTable(newMarketRelayStyles(false, "default")), "\n")
+			if len(lines) != 4 || strings.Fields(lines[1])[0] != "1" || !strings.Contains(lines[1], FormatDisplayCents(buy)+" ISK") {
+				t.Fatalf("width %d buy %d: unexpected profit table: %v", width, buy, lines)
+			}
 		}
 	}
 }

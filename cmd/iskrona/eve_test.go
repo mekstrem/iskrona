@@ -151,6 +151,13 @@ func TestCallbackRejectsMismatchedState(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("valid callback status = %d", resp.StatusCode)
 	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(body), "EVE authorization received. Return to the terminal for the final result. You can close this page.\n"; got != want {
+		t.Fatalf("valid callback body = %q, want %q", got, want)
+	}
 	select {
 	case got := <-result:
 		if got.code != "valid" || got.err != nil {
@@ -253,6 +260,12 @@ func TestLoginPersistsDerivedFeesAuthorizationAndOutput(t *testing.T) {
 			}
 			return jsonResponse(http.StatusOK, `{"skills":[{"skill_id":16622,"current_skill_level":5},{"skill_id":3446,"current_skill_level":5}]}`)
 		case "https://esi.test/latest/characters/42/standings/":
+			if err := saveMaxJumps(configPath, 13); err != nil {
+				t.Fatal(err)
+			}
+			if err := saveTheme(configPath, "amarr"); err != nil {
+				t.Fatal(err)
+			}
 			return jsonResponse(http.StatusOK, `[{"from_id":1000035,"from_type":"npc_corp","standing":10},{"from_id":500001,"from_type":"faction","standing":10}]`)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
@@ -274,7 +287,7 @@ func TestLoginPersistsDerivedFeesAuthorizationAndOutput(t *testing.T) {
 	if got.Fees.BuyBroker != .012 || math.Abs(got.Fees.Broker-.01) > 1e-9 || math.Abs(got.Fees.SalesTax-.03375) > 1e-9 {
 		t.Fatalf("saved fees = %#v", got.Fees)
 	}
-	if got.Market.MaxJumps != 7 {
+	if got.Market.MaxJumps != 13 || got.Display.Theme != "amarr" {
 		t.Fatalf("unrelated config changed: %#v", got.Market)
 	}
 	if store["iskrona/eve-refresh-token-42"] != "new-refresh" {
@@ -326,6 +339,24 @@ func TestLoginDoesNotPersistConfigWhenCredentialSaveFails(t *testing.T) {
 	}
 }
 
+type failConfigSaveStore struct {
+	credentialStore
+	path string
+	t    *testing.T
+}
+
+func (s failConfigSaveStore) Set(service, user, value string) error {
+	if value == "new-refresh" {
+		if err := os.Rename(s.path, s.path+".backup"); err != nil {
+			s.t.Fatal(err)
+		}
+		if err := os.Mkdir(s.path, 0700); err != nil {
+			s.t.Fatal(err)
+		}
+	}
+	return s.credentialStore.Set(service, user, value)
+}
+
 func TestFirstLoginConfigSaveFailureLeavesNoCredentialAfterLogout(t *testing.T) {
 	path := useIsolatedUserConfigDir(t)
 	initial := DefaultConfig()
@@ -337,7 +368,7 @@ func TestFirstLoginConfigSaveFailureLeavesNoCredentialAfterLogout(t *testing.T) 
 	eveAPIBase, eveSSOToken = "https://esi.test/latest", "https://sso.test/token"
 	store := &recordingCredentialStore{}
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"CHARACTER:EVE:42","name":"Mikko"}`))
-	c := &eveClient{store: store, loginTimeout: time.Second, openBrowser: func(raw string) error {
+	c := &eveClient{store: failConfigSaveStore{credentialStore: store, path: path, t: t}, loginTimeout: time.Second, openBrowser: func(raw string) error {
 		u, err := url.Parse(raw)
 		if err != nil {
 			return err
@@ -356,12 +387,6 @@ func TestFirstLoginConfigSaveFailureLeavesNoCredentialAfterLogout(t *testing.T) 
 		case "/latest/characters/42/skills/":
 			return jsonResponse(http.StatusOK, `{"skills":[]}`)
 		case "/latest/characters/42/standings/":
-			if err := os.Rename(path, path+".backup"); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Mkdir(path, 0700); err != nil {
-				t.Fatal(err)
-			}
 			return jsonResponse(http.StatusOK, `[]`)
 		default:
 			t.Fatalf("unexpected request: %s", r.URL)
@@ -423,7 +448,11 @@ func TestLoginConfigSaveFailureRollsBackAuthorization(t *testing.T) {
 			defer func() { eveAPIBase, eveSSOToken = oldAPI, oldToken }()
 			eveAPIBase, eveSSOToken = "https://esi.test/latest", "https://sso.test/token"
 			store := &rollbackTestStore{memoryCredentialStore: memoryCredentialStore{"iskrona/eve-refresh-token-42": "old-refresh"}, missing: tc.missing, getErr: tc.getErr, rollbackErr: tc.rollbackErr}
-			c := &eveClient{store: store, httpClient: &http.Client{Transport: roundTripper(func(r *http.Request) *http.Response {
+			var credentials credentialStore = store
+			if tc.getErr == nil {
+				credentials = failConfigSaveStore{credentialStore: store, path: path, t: t}
+			}
+			c := &eveClient{store: credentials, httpClient: &http.Client{Transport: roundTripper(func(r *http.Request) *http.Response {
 				switch r.URL.Path {
 				case "/latest/universe/stations/60003760/":
 					return jsonResponse(http.StatusOK, `{"name":"Jita IV - Moon 4 - Caldari Navy Assembly Plant","owner":1000035,"race_id":1}`)
@@ -432,14 +461,6 @@ func TestLoginConfigSaveFailureRollsBackAuthorization(t *testing.T) {
 				case "/latest/characters/42/skills/":
 					return jsonResponse(http.StatusOK, `{"skills":[]}`)
 				case "/latest/characters/42/standings/":
-					if tc.getErr == nil {
-						if err := os.Rename(path, path+".backup"); err != nil {
-							t.Fatal(err)
-						}
-						if err := os.Mkdir(path, 0700); err != nil {
-							t.Fatal(err)
-						}
-					}
 					return jsonResponse(http.StatusOK, `[]`)
 				default:
 					t.Fatalf("unexpected request: %s", r.URL)

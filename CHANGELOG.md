@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.1 — Unreleased
+
+### Changed
+
+- Profit examples now always include one unit. (#19)
+
 ## v0.3.0 — 2026-11-02
 
 ### Added

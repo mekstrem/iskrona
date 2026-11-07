@@ -111,11 +111,11 @@ func TestAnalyzeMarketOffGridPrices(t *testing.T) {
 }
 
 func TestCalculateMargin(t *testing.T) {
-	got := CalculateMargin(279300000, 599900000, .02, .02, .01)
+	got := CalculateMargin(279300000, 599900000, .02, .02, .01, "npc")
 	if got < 51.04 || got > 51.05 {
 		t.Fatalf("margin %.4f", got)
 	}
-	got = CalculateMargin(10000, 20000, .005, .02, .01)
+	got = CalculateMargin(10000, 20000, .005, .02, .01, "npc")
 	if got < 48.195 || got > 48.197 {
 		t.Fatalf("asymmetric fee margin %.4f", got)
 	}
@@ -162,9 +162,36 @@ func TestFormatDisplayUnits(t *testing.T) {
 }
 
 func TestProfitExampleScalesAndAppliesFees(t *testing.T) {
-	cost, revenue, profit, _ := profitExample(10000, 20000, 10, 0.005, 0.02, 0.01)
+	cost, revenue, profit, _ := profitExample(10000, 20000, 10, 0.005, 0.02, 0.01, "npc")
 	if cost != 100500 || revenue != 194000 || profit != 93500 {
 		t.Fatalf("profit example = %d/%d/%d, want 100500/194000/93500", cost, revenue, profit)
+	}
+}
+
+func TestBuyOrderFees(t *testing.T) {
+	for _, tc := range []struct {
+		name, location     string
+		price, units, want int64
+		rate               float64
+	}{
+		{"structure minimum and surcharge", "structure", 10000, 1, 20050, .005},
+		{"structure screenshot", "structure", 26930000, 1, 27074650, .005},
+		{"structure zero rate still charges surcharge", "structure", 26930000, 1, 27074650, 0},
+		{"structure sub-surcharge rate", "structure", 26930000, 1, 27074650, .004},
+		{"minimum once per order", "structure", 10000, 10, 110500, .005},
+		{"structure percentage above minimum", "structure", 1000000, 1, 1020000, .02},
+		{"structure percentage below minimum", "structure", 10000, 1, 20050, .02},
+		{"npc percentage", "npc", 10000, 1, 10200, .02},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cost, _, _, ok := profitExample(tc.price, tc.price*3, tc.units, tc.rate, 0, 0, tc.location)
+			if !ok || cost != tc.want {
+				t.Fatalf("cost = %d, ok = %v; want %d", cost, ok, tc.want)
+			}
+		})
+	}
+	if got := CalculateMargin(10000, 30000, .005, 0, 0, "structure"); got < 33.16 || got > 33.17 {
+		t.Fatalf("single-unit structure margin = %v", got)
 	}
 }
 

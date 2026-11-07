@@ -37,26 +37,28 @@ var isInteractiveTerminal = func() bool {
 }
 
 type marketRelaySnapshot struct {
-	item      string
-	orders    int
-	buyCents  int64
-	sellCents int64
-	hasBuy    bool
-	hasSell   bool
-	margin    float64
-	broker    float64
-	buyBroker float64
-	tax       float64
-	copyMode  string
-	maxJumps  int
+	item        string
+	orders      int
+	buyCents    int64
+	sellCents   int64
+	hasBuy      bool
+	hasSell     bool
+	margin      float64
+	broker      float64
+	buyBroker   float64
+	buyLocation string
+	tax         float64
+	copyMode    string
+	maxJumps    int
 }
 
 type marketRelayEvent struct {
-	snapshot *marketRelaySnapshot
-	orders   []Order
-	status   string
-	isError  bool
-	copied   bool
+	snapshot   *marketRelaySnapshot
+	orders     []Order
+	status     string
+	isError    bool
+	copied     bool
+	scanStatus bool
 }
 
 // marketRelayRuntime is shared by the Bubble Tea event loop and the directory
@@ -113,6 +115,7 @@ type marketRelayModel struct {
 	toast         string
 	toastID       uint64
 	lastError     string
+	scanError     string
 	devExport     tea.Cmd
 	checkUpdate   func() string
 	updateVersion string
@@ -171,7 +174,11 @@ func runMarketRelay(configPath string, c Config, clipboardOK bool) error {
 		err := watchDirectoryWithOptions(ctx, c.Market.Marketlogs, func(path string, signature fileSignature) error {
 			return process(path, &signature)
 		}, func() { close(watcherReady) }, func(err error) {
-			sendMarketRelayEvent(ctx, events, marketRelayEvent{status: fmt.Sprintf("%v; retrying", err), isError: true})
+			status := ""
+			if err != nil {
+				status = fmt.Sprintf("%v; retrying", err)
+			}
+			sendMarketRelayEvent(ctx, events, marketRelayEvent{status: status, scanStatus: true})
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			sendMarketRelayEvent(ctx, events, marketRelayEvent{status: err.Error(), isError: true})
@@ -265,20 +272,21 @@ func marketRelayFileProcessor(ctx context.Context, runtime *marketRelayRuntime, 
 func marketRelaySnapshotForOrders(item string, orders []Order, c Config) *marketRelaySnapshot {
 	summary := AnalyzeMarket(orders, c.Market.MaxJumps)
 	snapshot := &marketRelaySnapshot{
-		item:      item,
-		orders:    eligibleOrderCount(orders, c.Market.MaxJumps),
-		buyCents:  summary.BuyCents,
-		sellCents: summary.SellCents,
-		hasBuy:    summary.BestBuy != nil,
-		hasSell:   summary.BestSell != nil,
-		broker:    c.Fees.Broker,
-		buyBroker: c.Fees.BuyBroker,
-		tax:       c.Fees.SalesTax,
-		copyMode:  c.Display.CopyMode,
-		maxJumps:  c.Market.MaxJumps,
+		item:        item,
+		orders:      eligibleOrderCount(orders, c.Market.MaxJumps),
+		buyCents:    summary.BuyCents,
+		sellCents:   summary.SellCents,
+		hasBuy:      summary.BestBuy != nil,
+		hasSell:     summary.BestSell != nil,
+		broker:      c.Fees.Broker,
+		buyBroker:   c.Fees.BuyBroker,
+		buyLocation: c.Fees.BuyLocation,
+		tax:         c.Fees.SalesTax,
+		copyMode:    c.Display.CopyMode,
+		maxJumps:    c.Market.MaxJumps,
 	}
 	if snapshot.hasBuy && snapshot.hasSell {
-		snapshot.margin = CalculateMargin(snapshot.buyCents, snapshot.sellCents, c.Fees.BuyBroker, c.Fees.Broker, c.Fees.SalesTax)
+		snapshot.margin = CalculateMargin(snapshot.buyCents, snapshot.sellCents, c.Fees.BuyBroker, c.Fees.Broker, c.Fees.SalesTax, c.Fees.BuyLocation)
 	}
 	return snapshot
 }
@@ -399,6 +407,10 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	case marketRelayEvent:
+		if msg.scanStatus {
+			m.scanError = msg.status
+			return m, waitForMarketRelayEvent(m.events)
+		}
 		if msg.snapshot != nil {
 			m.recent = append([]marketRelaySnapshot{*msg.snapshot}, m.recent...)
 			if len(m.recent) > 5 {
@@ -585,9 +597,12 @@ func (m marketRelayModel) View() string {
 		if m.lastError != "" {
 			status = "Last error: " + m.lastError + "  ·  i details"
 		}
+		if m.scanError != "" {
+			status = m.scanError
+		}
 	}
 	status = relayClip(status, contentWidth)
-	if m.isError && m.toast != "" {
+	if (m.isError && m.toast != "") || (m.toast == "" && m.scanError != "") {
 		status = styles.error.Render(status)
 	} else {
 		status = styles.muted.Render(status)
@@ -719,7 +734,7 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 		lines = []string{"Units  ·  Net profit after fees (ISK)"}
 	}
 	previous := int64(0)
-	for _, budget := range []int64{100_000_000, 1_000_000_000, 10_000_000_000} {
+	for _, budget := range []int64{0, 1_000_000_000, 10_000_000_000} {
 		units := exampleUnits(m.snapshot.buyCents, budget)
 		if units <= 0 {
 			lines = append(lines, styles.muted.Render("Profit example exceeds the supported amount."))
@@ -733,7 +748,7 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 			units = previous * 2
 		}
 		previous = units
-		cost, revenue, net, ok := profitExample(m.snapshot.buyCents, m.snapshot.sellCents, units, m.snapshot.buyBroker, m.snapshot.broker, m.snapshot.tax)
+		cost, revenue, net, ok := profitExample(m.snapshot.buyCents, m.snapshot.sellCents, units, m.snapshot.buyBroker, m.snapshot.broker, m.snapshot.tax, m.snapshot.buyLocation)
 		if !ok {
 			lines = append(lines, styles.muted.Render("Profit example exceeds the supported amount."))
 			continue

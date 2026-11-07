@@ -204,12 +204,19 @@ func tickForRaise(p int64) int64 {
 	return t
 }
 
-// CalculateMargin returns percentage margin after buy and sell fees.
-func CalculateMargin(buyCents, sellCents int64, buyBroker, brokerFee, salesTax float64) float64 {
+func buyOrderCost(value float64, buyBroker float64, location string) float64 {
+	if location == "structure" {
+		return value + math.Max(10000, value*math.Max(0, buyBroker-.005)) + value*.005
+	}
+	return value * (1 + buyBroker)
+}
+
+// CalculateMargin estimates percentage margin for a single-unit order.
+func CalculateMargin(buyCents, sellCents int64, buyBroker, brokerFee, salesTax float64, location string) float64 {
 	if buyCents <= 0 || sellCents <= 0 {
 		return 0
 	}
-	return 100 * (1 - (float64(buyCents)*(1+buyBroker))/(float64(sellCents)*(1-brokerFee-salesTax)))
+	return 100 * (1 - buyOrderCost(float64(buyCents), buyBroker, location)/(float64(sellCents)*(1-brokerFee-salesTax)))
 }
 
 // FormatCents formats an integer ISK amount with exactly two decimal places.
