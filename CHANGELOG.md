@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.2 — 2026-11-07
+
+### Changed
+
+- Updated the Market Relay dashboard and Details screenshots. (#33)
+
 ## v0.3.1 — 2026-11-07
 
 ### Changed
