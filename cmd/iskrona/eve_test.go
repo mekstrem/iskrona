@@ -252,6 +252,12 @@ func TestLoginPersistsDerivedFeesAuthorizationAndOutput(t *testing.T) {
 			}
 			return jsonResponse(http.StatusOK, `{"skills":[{"skill_id":16622,"current_skill_level":5},{"skill_id":3446,"current_skill_level":5}]}`)
 		case "https://esi.test/latest/characters/42/standings/":
+			if err := saveMaxJumps(configPath, 13); err != nil {
+				t.Fatal(err)
+			}
+			if err := saveTheme(configPath, "amarr"); err != nil {
+				t.Fatal(err)
+			}
 			return jsonResponse(http.StatusOK, `[{"from_id":1000035,"from_type":"npc_corp","standing":10},{"from_id":500001,"from_type":"faction","standing":10}]`)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
@@ -273,7 +279,7 @@ func TestLoginPersistsDerivedFeesAuthorizationAndOutput(t *testing.T) {
 	if got.Fees.BuyBroker != .012 || math.Abs(got.Fees.Broker-.01) > 1e-9 || math.Abs(got.Fees.SalesTax-.03375) > 1e-9 {
 		t.Fatalf("saved fees = %#v", got.Fees)
 	}
-	if got.Market.MaxJumps != 7 {
+	if got.Market.MaxJumps != 13 || got.Display.Theme != "amarr" {
 		t.Fatalf("unrelated config changed: %#v", got.Market)
 	}
 	if store["iskrona/eve-refresh-token-42"] != "new-refresh" {
