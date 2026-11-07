@@ -75,7 +75,7 @@ func TestMarketRelayDevPriceVariationChangesMargin(t *testing.T) {
 		if summary.BestBuy == nil || summary.BestSell == nil {
 			t.Fatal("expected eligible buy and sell orders")
 		}
-		margins[i] = CalculateMargin(summary.BuyCents, summary.SellCents, 0, 0, 0)
+		margins[i] = CalculateMargin(summary.BuyCents, summary.SellCents, 0, 0, 0, "npc")
 	}
 	if margins[0] <= margins[1] {
 		t.Fatalf("expected lower buy and higher sell offsets to increase margin: %v", margins)
@@ -147,11 +147,14 @@ func TestMarketRelaySimulationWaitsForBaselineAndUsesWatcher(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		defer close(stopped)
-		done <- watchDirectory(ctx, c.Market.Marketlogs, marketRelayFileHandler(ctx, m.runtime, false, events), func(dir string) (map[string]fileSignature, error) {
+		process := marketRelayFileProcessor(ctx, m.runtime, false, events, ParseMarketCSV)
+		done <- watchDirectoryScansWithSignature(ctx, c.Market.Marketlogs, func(path string, signature fileSignature) error {
+			return process(path, &signature)
+		}, func(dir string) (map[string]fileSignature, error) {
 			files, err := scanDirectory(dir)
 			scans <- len(files)
 			return files, err
-		}, ticks, func() { close(ready) })
+		}, ticks, func() { close(ready) }, true)
 	}()
 	defer func() {
 		cancel()
@@ -196,6 +199,83 @@ func TestMarketRelaySimulationWaitsForBaselineAndUsesWatcher(t *testing.T) {
 	}
 	if m.isError || m.snapshot == nil || len(m.orders) != 52 || m.snapshot.orders != 33 || m.snapshot.buyCents <= 0 || m.snapshot.sellCents <= 0 || len(m.recent) != 1 {
 		t.Fatalf("real export did not reach normal analysis: snapshot=%#v, rows=%d, error=%t", m.snapshot, len(m.orders), m.isError)
+	}
+}
+
+func TestMarketRelaySimulationSignatureRetryAndSupersession(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := make(chan tea.Msg, 10)
+	process := marketRelayFileProcessor(ctx, newMarketRelayRuntime(relayTestConfig()), false, events, ParseMarketCSV)
+	ticks := make(chan time.Time, 5)
+	for range 5 {
+		ticks <- time.Time{}
+	}
+	var newer, older string
+	var attempts []error
+	scanCount := 0
+	err := watchDirectoryScansWithSignature(ctx, dir, func(path string, signature fileSignature) error {
+		if path != newer {
+			t.Errorf("superseded export processed: %s", path)
+		}
+		err := process(path, &signature)
+		attempts = append(attempts, err)
+		return err
+	}, func(dir string) (map[string]fileSignature, error) {
+		scanCount++
+		if scanCount == 2 {
+			var err error
+			newer, err = writeMarketRelayDevExport(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(newer, time.Unix(200, 0), time.Unix(200, 0)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if scanCount == 5 {
+			older = filepath.Join(dir, "older.txt")
+			if err := os.WriteFile(older, []byte(marketRelayDevExport), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(older, time.Unix(100, 0), time.Unix(100, 0)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		files, err := scanDirectory(dir)
+		if scanCount == 3 {
+			if err := os.Chtimes(newer, time.Unix(300, 0), time.Unix(300, 0)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if scanCount == 6 {
+			cancel()
+		}
+		return files, err
+	}, ticks, nil, true)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("watcher error = %v", err)
+	}
+	if len(attempts) != 2 || !errors.Is(attempts[0], errRetryFile) || attempts[1] != nil {
+		t.Fatalf("processing attempts = %v", attempts)
+	}
+	var snapshots int
+	var retry bool
+	for len(events) > 0 {
+		event := (<-events).(marketRelayEvent)
+		if strings.Contains(event.status, "export changed since scan") {
+			retry = true
+		}
+		if event.snapshot != nil {
+			snapshots++
+			if event.snapshot.item != strings.TrimSuffix(filepath.Base(newer), ".txt") {
+				t.Errorf("unexpected snapshot item: %s", event.snapshot.item)
+			}
+		}
+	}
+	if !retry || snapshots != 1 {
+		t.Fatalf("signature retry = %t, published snapshots = %d", retry, snapshots)
 	}
 }
 

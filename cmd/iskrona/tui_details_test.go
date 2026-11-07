@@ -29,19 +29,98 @@ func TestMarketRelayDetailsCostBreakdown(t *testing.T) {
 			m.snapshot = &marketRelaySnapshot{buyCents: tc.buy, sellCents: tc.sell, hasBuy: true, hasSell: true, buyBroker: tc.buyBroker, broker: tc.broker, tax: tc.tax}
 			m.detailsUnits = tc.units
 			lines := m.details(newMarketRelayStyles(false, "default"))
-			if !strings.Contains(lines[3], "Quantity: "+FormatDisplayUnits(tc.units)+"  ·") {
-				t.Fatalf("quantity = %q", lines[3])
+			if !strings.Contains(lines[2], "Quantity: "+FormatDisplayUnits(tc.units)+"  ·") {
+				t.Fatalf("quantity = %q", lines[2])
 			}
 			for i, label := range []string{"Purchase value", "Buy broker fee", "Total buy cost", "Sale value", "Sell broker + sales tax", "Net proceeds", "Net profit after fees"} {
 				want := fmt.Sprintf("%-24s %s", label, FormatDisplayCents(tc.values[i]))
 				if i == 6 {
 					want += " ISK"
 				}
-				if lines[i+4] != want {
-					t.Fatalf("%s = %q, want %q", label, lines[i+4], want)
+				if lines[i+3] != want {
+					t.Fatalf("%s = %q, want %q", label, lines[i+3], want)
 				}
 			}
 		})
+	}
+}
+
+func TestDetailsStructureSurchargeNotice(t *testing.T) {
+	for _, tc := range []struct {
+		location string
+		rate     float64
+		notice   bool
+	}{
+		{"structure", 0, true},
+		{"structure", .004, true},
+		{"structure", .005, false},
+		{"npc", 0, false},
+	} {
+		for _, snapshot := range []bool{false, true} {
+			c := relayTestConfig()
+			c.Fees.BuyLocation, c.Fees.BuyBroker = tc.location, tc.rate
+			m := newMarketRelayModel(c, true, make(chan tea.Msg))
+			if snapshot {
+				m.snapshot = &marketRelaySnapshot{buyLocation: tc.location, buyBroker: tc.rate}
+			}
+			text := strings.Join(m.details(newMarketRelayStyles(false, "default")), "\n")
+			if got := strings.Contains(text, "0.5% SCC + 100 ISK minimum"); got != tc.notice {
+				t.Errorf("location=%s rate=%g snapshot=%v: notice=%v", tc.location, tc.rate, snapshot, got)
+			}
+		}
+	}
+}
+
+func TestMarketRelayDetailsOneUnitAtCompactSize(t *testing.T) {
+	m := newMarketRelayModel(relayTestConfig(), false, make(chan tea.Msg))
+	m.width, m.height, m.showDetails = 80, 18, true
+	m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: 10_000, sellCents: 20_000, buyBroker: .005, broker: .02, tax: .01}
+	view := m.View()
+	for _, want := range []string{"TRADE COSTS  ·  Quantity: 1", "Purchase value           100.00", "Net profit after fees    93.50 ISK"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("compact details missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestMarketRelayDetailsStructureCostsAndNoticeFit(t *testing.T) {
+	for _, size := range [][2]int{{80, 18}, {80, 30}, {99, 21}, {100, 22}, {120, 26}, {120, 30}, {180, 18}, {180, 24}} {
+		for _, rate := range []float64{0, .004, .005, .02} {
+			m := newMarketRelayModel(relayTestConfig(), false, make(chan tea.Msg))
+			m.width, m.height = size[0], size[1]
+			m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: 10_000, sellCents: 30_000, buyBroker: rate, broker: .02, tax: .01, buyLocation: "structure"}
+			for _, step := range []struct {
+				key         string
+				units, cost int64
+			}{{"i", 1, 20_050}, {"+", 2, 30_100}, {"10000", 10_000, 100_510_000}} {
+				if rate == .02 && step.units == 10_000 {
+					step.cost = 102_000_000
+				}
+				m, _ = relayKey(m, step.key)
+				view := m.View()
+				values := []int64{10_000 * step.units, step.cost - 10_000*step.units, step.cost, 30_000 * step.units, 900 * step.units, 29_100 * step.units, 29_100*step.units - step.cost}
+				for i, label := range []string{"Purchase value", "Buy broker fee", "Total buy cost", "Sale value", "Sell broker + sales tax", "Net proceeds", "Net profit after fees"} {
+					want := fmt.Sprintf("%-24s %s", label, FormatDisplayCents(values[i]))
+					if i == 6 {
+						want += " ISK"
+					}
+					if !strings.Contains(view, want) {
+						t.Fatalf("%v rate %g units %d missing %q:\n%s", size, rate, step.units, want, view)
+					}
+				}
+				for _, want := range []string{"FILTER: max distance 0 jumps (not a route)", "Quantity: " + FormatDisplayUnits(step.units), "Example only; available volume and fills are not checked.", "[+/-] qty", "[Esc/q] close", "[Ctrl+C] quit"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("%v rate %g missing %q:\n%s", size, rate, want, view)
+					}
+				}
+				if got := strings.Contains(view, "Structure: 0.5% SCC + 100 ISK minimum despite configured rate."); got != (rate < .005) {
+					t.Fatalf("%v rate %g: surcharge notice visible=%t:\n%s", size, rate, got, view)
+				}
+				if lipgloss.Width(view) > size[0] || lipgloss.Height(view) != size[1] {
+					t.Fatalf("%v structure details overflow:\n%s", size, view)
+				}
+			}
+		}
 	}
 }
 
@@ -281,7 +360,7 @@ func TestProfitExamplesRejectOverflow(t *testing.T) {
 		{math.MaxInt64 / 2, 1, 1, 2, 0, 0},
 		{1, 1, 1, math.NaN(), 0, 0},
 	} {
-		if _, _, _, ok := profitExample(tc.buy, tc.sell, tc.units, tc.buyBroker, tc.broker, tc.tax); ok {
+		if _, _, _, ok := profitExample(tc.buy, tc.sell, tc.units, tc.buyBroker, tc.broker, tc.tax, "npc"); ok {
 			t.Fatalf("accepted overflow: %+v", tc)
 		}
 	}
