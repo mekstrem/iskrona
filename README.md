@@ -147,6 +147,14 @@ ISKrona automatically copies the selected recommendation when it processes an ex
 
 Bug reports and feature requests belong in [GitHub Issues](../../issues). Please read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
+## Support development
+
+ISKrona is a community project built for EVE Online players. If you find it useful and would like to support its continued development, you can send an in-game ISK donation to the corporation **Pleiadian Trading**.
+
+Donations are entirely optional. Whether you contribute ISK, report a bug, suggest an improvement, or simply use the tool, thank you for being part of the community!
+
+CCP’s [Developer License Agreement](https://developers.eveonline.com/license-agreement) permits developers to receive in-game ISK for their applications, subject to its terms.
+
 ## Development
 
 ```text
