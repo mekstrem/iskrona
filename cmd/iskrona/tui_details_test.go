@@ -115,3 +115,17 @@ func TestProfitExamplesRejectOverflow(t *testing.T) {
 		}
 	}
 }
+
+func TestProfitTableIncludesOneUnit(t *testing.T) {
+	for _, width := range []int{80, 120} {
+		for _, buy := range []int64{10_000, 200_000_000} {
+			m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+			m.width = width
+			m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: buy, sellCents: buy * 2}
+			lines := strings.Split(m.profitTable(newMarketRelayStyles(false, "default")), "\n")
+			if len(lines) != 4 || strings.Fields(lines[1])[0] != "1" || !strings.Contains(lines[1], FormatDisplayCents(buy)+" ISK") {
+				t.Fatalf("width %d buy %d: unexpected profit table: %v", width, buy, lines)
+			}
+		}
+	}
+}
