@@ -719,7 +719,7 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 		lines = []string{"Units  ·  Net profit after fees (ISK)"}
 	}
 	previous := int64(0)
-	for _, budget := range []int64{100_000_000, 1_000_000_000, 10_000_000_000} {
+	for _, budget := range []int64{0, 1_000_000_000, 10_000_000_000} {
 		units := exampleUnits(m.snapshot.buyCents, budget)
 		if units <= 0 {
 			lines = append(lines, styles.muted.Render("Profit example exceeds the supported amount."))

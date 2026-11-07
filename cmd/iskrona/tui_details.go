@@ -24,7 +24,7 @@ func (m marketRelayModel) details(styles marketRelayStyles) []string {
 	}
 	buyValue, sellValue := s.buyCents*units, s.sellCents*units
 	return append(lines,
-		styles.heading.Render("TRADE COSTS  ·  "+FormatDisplayUnits(units)+" units  ·  ISK"),
+		styles.heading.Render("TRADE COSTS  ·  "+FormatDisplayUnits(units)+" unit  ·  ISK"),
 		fmt.Sprintf("%-24s %s", "Purchase value", FormatDisplayCents(buyValue)),
 		fmt.Sprintf("%-24s %s", "Buy broker fee", FormatDisplayCents(cost-buyValue)),
 		fmt.Sprintf("%-24s %s", "Total buy cost", FormatDisplayCents(cost)),
