@@ -746,7 +746,7 @@ func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy b
 		lines = append(lines, styles.heading.Render("PROFIT EXAMPLES"), styles.muted.Render(fmt.Sprintf("Buy broker %.2f%% · Sell broker %.2f%% · Tax %.2f%%", s.buyBroker*100, s.broker*100, s.tax*100)), "")
 		lines = append(lines, strings.Split(m.profitTable(styles), "\n")...)
 	} else {
-		lines = append(lines, "", styles.muted.Render("i  profit examples & fees  ·  d  recent exports"))
+		lines = append(lines, "", styles.muted.Render("i  trade costs & fees  ·  d  recent exports"))
 	}
 	return lines
 }

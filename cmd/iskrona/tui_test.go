@@ -734,6 +734,9 @@ func TestMarketRelayViewBoundsAndMonochrome(t *testing.T) {
 				m.dense, m.showRecent = mode == "dense", mode == "recent"
 				m.showHelp, m.showDetails, m.showPalette = mode == "help", mode == "details", mode == "palette"
 				view := m.View()
+				if populated && size[0] == 80 && (mode == "normal" || mode == "dense") && !strings.Contains(view, "i  trade costs & fees  ·  d  recent exports") {
+					t.Fatalf("compact Details hint missing or misleading:\n%s", view)
+				}
 				if mode == "normal" && !strings.Contains(strings.Split(view, "\n")[size[1]-1], "q quit") {
 					t.Fatalf("quit control clipped at %v:\n%s", size, view)
 				}
