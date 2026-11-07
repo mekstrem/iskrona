@@ -1,12 +1,122 @@
 package main
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestConfigUpdatesAcrossProcesses(t *testing.T) {
+	if path := os.Getenv("ISKRONA_CONFIG_TEST_PATH"); path != "" {
+		f, err := os.OpenFile(path+".lock", os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := tryConfigLock(f); !configLockBlocked(err) {
+			if err == nil {
+				unlockConfigFile(f)
+			}
+			t.Fatalf("lock probe: got %v, want contention", err)
+		}
+		f.Close()
+		fmt.Println("blocked")
+		if err := saveTheme(path, "amarr"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := SaveConfig(path, DefaultConfig()); err != nil {
+		t.Fatal(err)
+	}
+	var cmd *exec.Cmd
+	err := withConfigLock(path, func(path string) error {
+		cmd = exec.Command(os.Args[0], "-test.run=^TestConfigUpdatesAcrossProcesses$")
+		cmd.Env = append(os.Environ(), "ISKRONA_CONFIG_TEST_PATH="+path)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		if err != nil {
+			return err
+		}
+		if line != "blocked\n" {
+			return fmt.Errorf("unexpected child output: %q", line)
+		}
+		c, _, err := loadConfig(path)
+		if err != nil {
+			return err
+		}
+		c.Market.MaxJumps = 30
+		return saveConfig(path, c)
+	})
+	if err != nil {
+		if cmd != nil && cmd.Process != nil {
+			cmd.Process.Kill()
+			cmd.Wait()
+		}
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Market.MaxJumps != 30 || c.Display.Theme != "amarr" {
+		t.Fatalf("lost update: %#v", c)
+	}
+}
+
+func TestLoadCurrentConfigWithoutLockFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[market]\nmax_jumps = 7\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory at the lock path prevents opening it even when running as root.
+	if err := os.Mkdir(path+".lock", 0700); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(path)
+	if err != nil || c.Market.MaxJumps != 7 {
+		t.Fatalf("LoadConfig = %#v, %v", c, err)
+	}
+}
+
+func TestFailedUpdateDoesNotInitializeOrMigrate(t *testing.T) {
+	useIsolatedUserConfigDir(t)
+	for _, contents := range []string{"", "jumps = 7\n"} {
+		t.Run(fmt.Sprintf("legacy=%t", contents != ""), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if contents != "" {
+				if err := os.WriteFile(path, []byte(contents), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := updateConfig(path, func(*Config) error { return errors.New("failed") }); err == nil {
+				t.Fatal("expected error")
+			}
+			data, err := os.ReadFile(path)
+			if contents == "" && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("expected missing file, got %v", err)
+			}
+			if contents != "" && (err != nil || string(data) != contents) {
+				t.Fatalf("legacy changed: %q, %v", data, err)
+			}
+		})
+	}
+}
 
 func TestSaveAndLoadConfig(t *testing.T) {
 	dir := t.TempDir()
@@ -242,6 +352,23 @@ func TestBuyBrokerConfigCompatibility(t *testing.T) {
 		if err != nil || c.Fees.BuyBroker != tc.want {
 			t.Fatalf("decode %q: buy broker = %g, error = %v", tc.data, c.Fees.BuyBroker, err)
 		}
+	}
+}
+
+func TestBuyLocationConfig(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"[fees]\nbuy_broker = 0.012\n", "structure"},
+		{"[fees]\nbuy_location = \"npc\"\n", "npc"},
+	} {
+		c, _, err := decodeConfig([]byte(tc.input))
+		if err != nil || c.Fees.BuyLocation != tc.want {
+			t.Fatalf("decode %q: location = %q, error = %v", tc.input, c.Fees.BuyLocation, err)
+		}
+	}
+	c := DefaultConfig()
+	c.Fees.BuyLocation = "unknown"
+	if err := c.Validate(false); err == nil {
+		t.Fatal("invalid buy location accepted")
 	}
 }
 

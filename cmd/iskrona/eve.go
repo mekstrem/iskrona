@@ -102,12 +102,14 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 		return commandError(err)
 	}
 	broker, tax, accounting, brokerRelations := deriveFees(skills, standings, station)
-	cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
-	cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
-	if err := c.store.Set("iskrona", credentialKey(character.ID), token.RefreshToken); err != nil {
-		return commandError(fmt.Errorf("save EVE authorization in credential store: %w", err))
-	}
-	if err := SaveConfig(path, cfg); err != nil {
+	if err := updateConfig(path, func(cfg *Config) error {
+		if err := c.store.Set("iskrona", credentialKey(character.ID), token.RefreshToken); err != nil {
+			return fmt.Errorf("save EVE authorization in credential store: %w", err)
+		}
+		cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
+		cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
+		return nil
+	}); err != nil {
 		return commandError(err)
 	}
 	fmt.Fprintf(out, "EVE fees updated\nCharacter: %s\nStation: %s\nAccounting: %d\nBroker Relations: %d\nBroker fee: %.3f%%\nSales tax: %.3f%%\n", character.Name, station.Name, accounting, brokerRelations, broker*100, tax*100)
@@ -119,11 +121,21 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 // single recovery path for an expired EVE authorization.
 func (c *eveClient) loginToken(ctx context.Context, cfg Config) (eveToken, eveCharacter, error) {
 	if cfg.EVE.CharacterID != 0 {
-		if refresh, err := c.store.Get("iskrona", credentialKey(cfg.EVE.CharacterID)); err == nil {
-			if token, err := c.refresh(ctx, refresh); err == nil {
+		refresh, err := c.store.Get("iskrona", credentialKey(cfg.EVE.CharacterID))
+		if err == nil {
+			token, err := c.refresh(ctx, refresh)
+			if err == nil {
 				return token, eveCharacter{ID: cfg.EVE.CharacterID, Name: cfg.EVE.CharacterName}, nil
 			}
+			if !errors.Is(err, errEVEAuthorizationRevoked) {
+				return eveToken{}, eveCharacter{}, err
+			}
+		} else if !errors.Is(err, keyring.ErrNotFound) {
+			return eveToken{}, eveCharacter{}, fmt.Errorf("load EVE authorization from credential store: %w", err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return eveToken{}, eveCharacter{}, fmt.Errorf("authorize EVE login: %w", err)
 	}
 	return c.authorize(ctx)
 }
@@ -133,17 +145,15 @@ func (c *eveClient) logout(out io.Writer) error {
 	if err != nil {
 		return commandError(err)
 	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		return commandError(err)
-	}
-	if cfg.EVE.CharacterID != 0 {
-		if err := c.store.Delete("iskrona", credentialKey(cfg.EVE.CharacterID)); err != nil && !errors.Is(err, keyring.ErrNotFound) {
-			return commandError(fmt.Errorf("remove EVE authorization: %w", err))
+	if err := updateConfig(path, func(cfg *Config) error {
+		if cfg.EVE.CharacterID != 0 {
+			if err := c.store.Delete("iskrona", credentialKey(cfg.EVE.CharacterID)); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+				return fmt.Errorf("remove EVE authorization: %w", err)
+			}
 		}
-	}
-	cfg.EVE = EVEConfig{}
-	if err := SaveConfig(path, cfg); err != nil {
+		cfg.EVE = EVEConfig{}
+		return nil
+	}); err != nil {
 		return commandError(err)
 	}
 	fmt.Fprintln(out, "EVE authorization removed")
@@ -334,24 +344,34 @@ func (c *eveClient) authorize(ctx context.Context) (eveToken, eveCharacter, erro
 	}
 }
 
+var errEVEAuthorizationRevoked = errors.New("EVE authorization revoked")
+
 func (c *eveClient) refresh(ctx context.Context, refreshToken string) (eveToken, error) {
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}, "client_id": {eveClientID}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, eveSSOToken, strings.NewReader(form.Encode()))
 	if err != nil {
-		return eveToken{}, err
+		return eveToken{}, fmt.Errorf("refresh EVE authorization: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return eveToken{}, err
+		return eveToken{}, fmt.Errorf("refresh EVE authorization: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusBadRequest {
+			var body struct {
+				Error string `json:"error"`
+			}
+			if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body) == nil && body.Error == "invalid_grant" {
+				return eveToken{}, fmt.Errorf("refresh EVE authorization: %w", errEVEAuthorizationRevoked)
+			}
+		}
 		return eveToken{}, fmt.Errorf("refresh EVE authorization: %s", resp.Status)
 	}
 	var token eveToken
 	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		return eveToken{}, err
+		return eveToken{}, fmt.Errorf("refresh EVE authorization: decode response: %w", err)
 	}
 	if token.RefreshToken == "" {
 		return eveToken{}, errors.New("refresh EVE authorization: response has no refresh token")
@@ -384,7 +404,7 @@ func startCallbackServer(expectedState string) (*http.Server, <-chan callbackRes
 			result <- callbackResult{err: errors.New("EVE login callback has no authorization code")}
 			return
 		}
-		fmt.Fprintln(w, "EVE login complete. You can close this page.")
+		fmt.Fprintln(w, "EVE authorization received. Return to the terminal for the final result. You can close this page.")
 		result <- callbackResult{code: code}
 	})
 	ln, err := net.Listen("tcp", server.Addr)

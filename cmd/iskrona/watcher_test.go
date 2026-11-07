@@ -272,7 +272,40 @@ func TestWatchDirectoryRetriesIncompleteScansWithoutLosingState(t *testing.T) {
 			return nil, end
 		}
 	}, ticks, nil, true, func(err error) { reports = append(reports, err) })
-	if !errors.Is(err, end) || !reflect.DeepEqual(calls, []string{"new.txt"}) || len(reports) != 2 {
+	if !errors.Is(err, end) || !reflect.DeepEqual(calls, []string{"new.txt"}) || !reflect.DeepEqual(reports, []error{retry, nil, retry, nil}) {
+		t.Fatalf("error = %v, calls = %v, reports = %v", err, calls, reports)
+	}
+}
+
+func TestWatchDirectoryRetriesDirectoryScanAfterRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new.txt")
+	ticks := make(chan time.Time, 4)
+	for range 4 {
+		ticks <- time.Time{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var reports []error
+	var calls []string
+	scans := 0
+	err := watchDirectoryScansWithReporting(ctx, dir, func(path string, _ fileSignature) error {
+		calls = append(calls, path)
+		cancel()
+		return nil
+	}, func(string) (map[string]fileSignature, error) {
+		scans++
+		if scans == 2 {
+			return scanDirectory(filepath.Join(dir, "missing"))
+		}
+		if scans == 3 {
+			if err := os.WriteFile(path, []byte("export"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return scanDirectory(dir)
+	}, ticks, nil, true, func(err error) { reports = append(reports, err) })
+	if !errors.Is(err, context.Canceled) || !reflect.DeepEqual(calls, []string{path}) || len(reports) != 2 || !errors.Is(reports[0], os.ErrNotExist) || reports[1] != nil {
 		t.Fatalf("error = %v, calls = %v, reports = %v", err, calls, reports)
 	}
 }
@@ -286,7 +319,8 @@ func TestWatchDirectoryContinuesWithUnknownEntry(t *testing.T) {
 	for range 4 {
 		ticks <- time.Time{}
 	}
-	scans, reports, baselines := 0, 0, 0
+	scans, baselines := 0, 0
+	var reports []error
 	var calls []string
 	err := watchDirectoryScansWithReporting(context.Background(), t.TempDir(), func(path string, _ fileSignature) error {
 		calls = append(calls, path)
@@ -303,9 +337,9 @@ func TestWatchDirectoryContinuesWithUnknownEntry(t *testing.T) {
 		default:
 			return nil, end
 		}
-	}, ticks, func() { baselines++ }, true, func(error) { reports++ })
-	if !errors.Is(err, end) || !reflect.DeepEqual(calls, []string{"healthy.txt"}) || reports != 1 || baselines != 1 {
-		t.Fatalf("error = %v, calls = %v, reports = %d, baselines = %d", err, calls, reports, baselines)
+	}, ticks, func() { baselines++ }, true, func(err error) { reports = append(reports, err) })
+	if !errors.Is(err, end) || !reflect.DeepEqual(calls, []string{"healthy.txt"}) || !reflect.DeepEqual(reports, []error{retry, nil}) || baselines != 1 {
+		t.Fatalf("error = %v, calls = %v, reports = %v, baselines = %d", err, calls, reports, baselines)
 	}
 }
 

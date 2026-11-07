@@ -57,9 +57,14 @@ func watchDirectoryScans(ctx context.Context, dir string, onFile func(string) er
 }
 
 func watchDirectoryScansWithSignature(ctx context.Context, dir string, onFile func(string, fileSignature) error, scan func(string) (map[string]fileSignature, error), ticks <-chan time.Time, afterBaseline func(), supersede bool) error {
-	return watchDirectoryScansWithReporting(ctx, dir, onFile, scan, ticks, afterBaseline, supersede, func(err error) { fmt.Fprintln(os.Stderr, err) })
+	return watchDirectoryScansWithReporting(ctx, dir, onFile, scan, ticks, afterBaseline, supersede, func(err error) {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+	})
 }
 
+// reportScanError receives nil once scanning fully recovers from a reported error.
 func watchDirectoryScansWithReporting(ctx context.Context, dir string, onFile func(string, fileSignature) error, scan func(string) (map[string]fileSignature, error), ticks <-chan time.Time, afterBaseline func(), supersede bool, reportScanError func(error)) error {
 	info, err := os.Stat(dir)
 	if err != nil {
@@ -77,6 +82,10 @@ func watchDirectoryScansWithReporting(ctx context.Context, dir string, onFile fu
 			if err != nil && !reported {
 				reportScanError(err)
 				reported = true
+			}
+			if err == nil && reported {
+				reportScanError(nil)
+				reported = false
 			}
 			break
 		}
@@ -116,7 +125,8 @@ func watchDirectoryScansWithReporting(ctx context.Context, dir string, onFile fu
 				} else {
 					return scanErr
 				}
-			} else {
+			} else if reported {
+				reportScanError(nil)
 				reported = false
 			}
 			paths := make([]string, 0, len(current))
@@ -204,7 +214,7 @@ func watchDirectoryScansWithReporting(ctx context.Context, dir string, onFile fu
 func scanDirectory(dir string) (map[string]fileSignature, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, fmt.Errorf("scan marketlogs directory: %w", err)
+		return nil, fmt.Errorf("%w: scan marketlogs directory %q: %w", errRetryScan, dir, err)
 	}
 	return scanDirectoryEntries(dir, entries)
 }

@@ -150,6 +150,13 @@ func TestCallbackRejectsMismatchedState(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("valid callback status = %d", resp.StatusCode)
 	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(body), "EVE authorization received. Return to the terminal for the final result. You can close this page.\n"; got != want {
+		t.Fatalf("valid callback body = %q, want %q", got, want)
+	}
 	select {
 	case got := <-result:
 		if got.code != "valid" || got.err != nil {
@@ -226,6 +233,60 @@ func TestLoginTokenRefreshesSavedAuthorization(t *testing.T) {
 	}
 }
 
+func TestLoginTokenFallbackAndErrors(t *testing.T) {
+	browserErr := errors.New("browser invoked")
+	storeErr := errors.New("store unavailable")
+	networkErr := errors.New("network unavailable")
+	tests := []struct {
+		name         string
+		characterID  int64
+		getErr       error
+		status       int
+		body         string
+		transportErr error
+		cancel       bool
+		want         error
+		context      string
+	}{
+		{name: "no character", want: browserErr},
+		{name: "missing credential", characterID: 42, getErr: fmt.Errorf("wrapped: %w", keyring.ErrNotFound), want: browserErr},
+		{name: "revoked", characterID: 42, status: 400, body: `{"error":"invalid_grant"}`, want: browserErr},
+		{name: "store failure", characterID: 42, getErr: storeErr, want: storeErr, context: "credential store"},
+		{name: "network failure", characterID: 42, transportErr: networkErr, want: networkErr, context: "refresh EVE authorization"},
+		{name: "canceled refresh", characterID: 42, transportErr: context.Canceled, want: context.Canceled, context: "refresh EVE authorization"},
+		{name: "canceled before browser", cancel: true, want: context.Canceled, context: "authorize EVE login"},
+		{name: "unauthorized not revoked", characterID: 42, status: 401, body: `{"error":"invalid_grant"}`, context: "401 test"},
+		{name: "server failure not revoked", characterID: 42, status: 500, body: `{"error":"invalid_grant"}`, context: "500 test"},
+		{name: "other oauth error", characterID: 42, status: 400, body: `{"error":"invalid_client"}`, context: "400 test"},
+		{name: "malformed error", characterID: 42, status: 400, body: `{`, context: "400 test"},
+		{name: "malformed success", characterID: 42, status: 200, body: `{`, context: "decode response"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			c := &eveClient{
+				store: &recordingCredentialStore{values: map[string]string{"iskrona/eve-refresh-token-42": "old"}, getErr: tc.getErr},
+				httpClient: &http.Client{Transport: errorRoundTripper(func(*http.Request) (*http.Response, error) {
+					if tc.transportErr != nil {
+						return nil, tc.transportErr
+					}
+					return jsonResponse(tc.status, tc.body), nil
+				})},
+				openBrowser: func(string) error { return browserErr },
+			}
+			_, _, err := c.loginToken(ctx, Config{EVE: EVEConfig{CharacterID: tc.characterID}})
+			if err == nil || (tc.want != nil && !errors.Is(err, tc.want)) || (tc.context != "" && !strings.Contains(err.Error(), tc.context)) || (tc.want == nil && errors.Is(err, browserErr)) {
+				t.Fatalf("loginToken error = %v, want %v containing %q", err, tc.want, tc.context)
+			}
+		})
+	}
+}
+
 func TestLoginPersistsDerivedFeesAuthorizationAndOutput(t *testing.T) {
 	configPath := useIsolatedUserConfigDir(t)
 	initial := DefaultConfig()
@@ -252,6 +313,12 @@ func TestLoginPersistsDerivedFeesAuthorizationAndOutput(t *testing.T) {
 			}
 			return jsonResponse(http.StatusOK, `{"skills":[{"skill_id":16622,"current_skill_level":5},{"skill_id":3446,"current_skill_level":5}]}`)
 		case "https://esi.test/latest/characters/42/standings/":
+			if err := saveMaxJumps(configPath, 13); err != nil {
+				t.Fatal(err)
+			}
+			if err := saveTheme(configPath, "amarr"); err != nil {
+				t.Fatal(err)
+			}
 			return jsonResponse(http.StatusOK, `[{"from_id":1000035,"from_type":"npc_corp","standing":10},{"from_id":500001,"from_type":"faction","standing":10}]`)
 		default:
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL)
@@ -273,7 +340,7 @@ func TestLoginPersistsDerivedFeesAuthorizationAndOutput(t *testing.T) {
 	if got.Fees.BuyBroker != .012 || math.Abs(got.Fees.Broker-.01) > 1e-9 || math.Abs(got.Fees.SalesTax-.03375) > 1e-9 {
 		t.Fatalf("saved fees = %#v", got.Fees)
 	}
-	if got.Market.MaxJumps != 7 {
+	if got.Market.MaxJumps != 13 || got.Display.Theme != "amarr" {
 		t.Fatalf("unrelated config changed: %#v", got.Market)
 	}
 	if store["iskrona/eve-refresh-token-42"] != "new-refresh" {
@@ -471,6 +538,10 @@ func TestCharacterFromJWTRejectsMalformedClaims(t *testing.T) {
 type roundTripper func(*http.Request) *http.Response
 
 func (f roundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r), nil }
+
+type errorRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f errorRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 func jsonResponse(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Status: fmt.Sprintf("%d test", status), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
 }
@@ -496,6 +567,7 @@ func (s memoryCredentialStore) Delete(service, user string) error {
 type recordingCredentialStore struct {
 	values    map[string]string
 	setErr    error
+	getErr    error
 	deleteErr error
 	deleted   []string
 }
@@ -511,6 +583,9 @@ func (s *recordingCredentialStore) Set(service, user, password string) error {
 	return nil
 }
 func (s *recordingCredentialStore) Get(service, user string) (string, error) {
+	if s.getErr != nil {
+		return "", s.getErr
+	}
 	value, ok := s.values[service+"/"+user]
 	if !ok {
 		return "", keyring.ErrNotFound
