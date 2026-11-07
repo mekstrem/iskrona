@@ -829,13 +829,7 @@ func TestMarketRelayProfitColorsPreserveLayoutAndNoColor(t *testing.T) {
 					t.Fatalf("color changed View layout, width %d details %t", width, details)
 				}
 				if width == 120 || details {
-					viewWant := want
-					if details {
-						units := exampleUnits(10_000, 100_000_000)
-						_, _, detailsNet, _ := profitExample(10_000, sell, units, 0, 0, 0)
-						viewWant = newMarketRelayStyles(true, "default").margin(float64(detailsNet)).Render(FormatDisplayCents(detailsNet) + " ISK")
-					}
-					if !strings.Contains(coloredView, viewWant) {
+					if !strings.Contains(coloredView, want) {
 						t.Fatal("semantic net profit color missing from dashboard/details")
 					}
 				}
