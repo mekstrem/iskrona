@@ -119,11 +119,21 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 // single recovery path for an expired EVE authorization.
 func (c *eveClient) loginToken(ctx context.Context, cfg Config) (eveToken, eveCharacter, error) {
 	if cfg.EVE.CharacterID != 0 {
-		if refresh, err := c.store.Get("iskrona", credentialKey(cfg.EVE.CharacterID)); err == nil {
-			if token, err := c.refresh(ctx, refresh); err == nil {
+		refresh, err := c.store.Get("iskrona", credentialKey(cfg.EVE.CharacterID))
+		if err == nil {
+			token, err := c.refresh(ctx, refresh)
+			if err == nil {
 				return token, eveCharacter{ID: cfg.EVE.CharacterID, Name: cfg.EVE.CharacterName}, nil
 			}
+			if !errors.Is(err, errEVEAuthorizationRevoked) {
+				return eveToken{}, eveCharacter{}, err
+			}
+		} else if !errors.Is(err, keyring.ErrNotFound) {
+			return eveToken{}, eveCharacter{}, fmt.Errorf("load EVE authorization from credential store: %w", err)
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return eveToken{}, eveCharacter{}, fmt.Errorf("authorize EVE login: %w", err)
 	}
 	return c.authorize(ctx)
 }
@@ -334,24 +344,34 @@ func (c *eveClient) authorize(ctx context.Context) (eveToken, eveCharacter, erro
 	}
 }
 
+var errEVEAuthorizationRevoked = errors.New("EVE authorization revoked")
+
 func (c *eveClient) refresh(ctx context.Context, refreshToken string) (eveToken, error) {
 	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}, "client_id": {eveClientID}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, eveSSOToken, strings.NewReader(form.Encode()))
 	if err != nil {
-		return eveToken{}, err
+		return eveToken{}, fmt.Errorf("refresh EVE authorization: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return eveToken{}, err
+		return eveToken{}, fmt.Errorf("refresh EVE authorization: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		if resp.StatusCode == http.StatusBadRequest {
+			var body struct {
+				Error string `json:"error"`
+			}
+			if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body) == nil && body.Error == "invalid_grant" {
+				return eveToken{}, fmt.Errorf("refresh EVE authorization: %w", errEVEAuthorizationRevoked)
+			}
+		}
 		return eveToken{}, fmt.Errorf("refresh EVE authorization: %s", resp.Status)
 	}
 	var token eveToken
 	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		return eveToken{}, err
+		return eveToken{}, fmt.Errorf("refresh EVE authorization: decode response: %w", err)
 	}
 	if token.RefreshToken == "" {
 		return eveToken{}, errors.New("refresh EVE authorization: response has no refresh token")
