@@ -150,6 +150,13 @@ func TestCallbackRejectsMismatchedState(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("valid callback status = %d", resp.StatusCode)
 	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(body), "EVE authorization received. Return to the terminal for the final result. You can close this page.\n"; got != want {
+		t.Fatalf("valid callback body = %q, want %q", got, want)
+	}
 	select {
 	case got := <-result:
 		if got.code != "valid" || got.err != nil {
