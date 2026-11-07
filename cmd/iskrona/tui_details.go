@@ -25,7 +25,7 @@ func (m marketRelayModel) details(styles marketRelayStyles) []string {
 	if m.detailsTyping {
 		quantity += "▏"
 	}
-	lines = append(lines, styles.heading.Render("TRADE COSTS  ·  Quantity: "+quantity+"  ·  ISK"))
+	lines = append(lines, styles.heading.Render("TRADE COSTS · ISK Quantity: ["+quantity+"]  type to change"))
 	if m.snapshot == nil {
 		return append(lines, "Waiting for the first export; no recommendations yet.")
 	}
@@ -52,4 +52,22 @@ func (m marketRelayModel) details(styles marketRelayStyles) []string {
 	lines = append(lines, fmt.Sprintf("%-24s %s", "Net profit after fees", styles.margin(float64(net)).Render(FormatDisplayCents(net)+" ISK")))
 	lines = append(lines, gap...)
 	return append(lines, styles.muted.Render("Example only; available volume and fills are not checked."))
+}
+
+func (m marketRelayModel) detailsHelp(styles marketRelayStyles) []string {
+	row := func(key, action string) string { return fmt.Sprintf("%-18s%s", key, action) }
+	return []string{
+		styles.title.Render("DETAILS KEYS"),
+		styles.muted.Render("Quantity changes update trade totals as you type."),
+		row("0-9", "First digit replaces quantity; next digits append."),
+		row("Enter", "Finish entry; next digit starts a new quantity."),
+		row("Backspace/Delete", "Remove last digit; quantity stays at least 1."),
+		row("+/-", "Change by one unit and finish entry."),
+		"Whole digits only; no commas or decimals. Minimum quantity: 1.",
+		"Quantities above 9,223,372,036,854,775,807 are ignored.",
+		"",
+		row("? / Esc / q", "Back to Details; keep your entry."),
+		row("Esc / q / i", "Close Details when help is closed."),
+		row("Ctrl+C", "Quit from any view."),
+	}
 }

@@ -29,7 +29,7 @@ func TestMarketRelayDetailsCostBreakdown(t *testing.T) {
 			m.snapshot = &marketRelaySnapshot{buyCents: tc.buy, sellCents: tc.sell, hasBuy: true, hasSell: true, buyBroker: tc.buyBroker, broker: tc.broker, tax: tc.tax}
 			m.detailsUnits = tc.units
 			lines := m.details(newMarketRelayStyles(false, "default"))
-			if !strings.Contains(lines[2], "Quantity: "+FormatDisplayUnits(tc.units)+"  ·") {
+			if !strings.Contains(lines[2], "Quantity: ["+FormatDisplayUnits(tc.units)+"]  type to change") {
 				t.Fatalf("quantity = %q", lines[2])
 			}
 			for i, label := range []string{"Purchase value", "Buy broker fee", "Total buy cost", "Sale value", "Sell broker + sales tax", "Net proceeds", "Net profit after fees"} {
@@ -76,7 +76,7 @@ func TestMarketRelayDetailsOneUnitAtCompactSize(t *testing.T) {
 	m.width, m.height, m.showDetails = 80, 18, true
 	m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: 10_000, sellCents: 20_000, buyBroker: .005, broker: .02, tax: .01}
 	view := m.View()
-	for _, want := range []string{"TRADE COSTS  ·  Quantity: 1", "Purchase value           100.00", "Net profit after fees    93.50 ISK"} {
+	for _, want := range []string{"TRADE COSTS · ISK Quantity: [1]  type to change", "Purchase value           100.00", "Net profit after fees    93.50 ISK"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("compact details missing %q:\n%s", want, view)
 		}
@@ -108,7 +108,7 @@ func TestMarketRelayDetailsStructureCostsAndNoticeFit(t *testing.T) {
 						t.Fatalf("%v rate %g units %d missing %q:\n%s", size, rate, step.units, want, view)
 					}
 				}
-				for _, want := range []string{"FILTER: max distance 0 jumps (not a route)", "Quantity: " + FormatDisplayUnits(step.units), "Example only; available volume and fills are not checked.", "[+/-] qty", "[Esc/q] close", "[Ctrl+C] quit"} {
+				for _, want := range []string{"FILTER: max distance 0 jumps (not a route)", "Quantity: [" + FormatDisplayUnits(step.units), "type to change", "Example only; available volume and fills are not checked.", "[+/-] qty", "[?] keys", "[Esc/q] close", "[Ctrl+C] quit"} {
 					if !strings.Contains(view, want) {
 						t.Fatalf("%v rate %g missing %q:\n%s", size, rate, want, view)
 					}
@@ -132,7 +132,7 @@ func TestMarketRelayDetailsCostsRemainVisibleAtSupportedSizes(t *testing.T) {
 		m.lastError = "clipboard unavailable"
 		m, _ = relayKey(m, "i")
 		view := m.View()
-		for _, want := range []string{"TRADE COSTS", "Quantity: 1  ·", "Total buy cost", "Net proceeds", "Net profit after fees", "volume and fills are not checked", "Last error:", "[0-9] qty ≥1", "[Enter] done", "[Bksp] edit", "[+/-] qty", "[Esc/q] close", "[Ctrl+C] quit"} {
+		for _, want := range []string{"TRADE COSTS", "Quantity: [1]  type to change", "Total buy cost", "Net proceeds", "Net profit after fees", "volume and fills are not checked", "Last error:", "[+/-] qty", "[?] keys", "[Esc/q] close", "[Ctrl+C] quit"} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("%v missing %q:\n%s", size, want, view)
 			}
@@ -179,7 +179,7 @@ func TestMarketRelayDetailsQuantityKeys(t *testing.T) {
 				}
 				view := m.View()
 				for _, row := range []string{
-					fmt.Sprintf("Quantity: %d  ·", step.units),
+					fmt.Sprintf("Quantity: [%d]  type to change", step.units),
 					fmt.Sprintf("%-24s %s", "Total buy cost", FormatDisplayCents(10_050*step.units)),
 					fmt.Sprintf("%-24s %s", "Sell broker + sales tax", FormatDisplayCents(600*step.units)),
 					fmt.Sprintf("%-24s %s ISK", "Net profit after fees", FormatDisplayCents(9_350*step.units)),
@@ -234,7 +234,7 @@ func TestMarketRelayDetailsDirectQuantityEntry(t *testing.T) {
 		}
 		view := m.View()
 		for _, row := range []string{
-			"Quantity: " + FormatDisplayUnits(units) + "▏",
+			"Quantity: [" + FormatDisplayUnits(units) + "▏]  type to change",
 			fmt.Sprintf("%-24s %s", "Purchase value", FormatDisplayCents(10_000*units)),
 			fmt.Sprintf("%-24s %s", "Buy broker fee", FormatDisplayCents(50*units)),
 			fmt.Sprintf("%-24s %s", "Total buy cost", FormatDisplayCents(10_050*units)),
@@ -242,7 +242,7 @@ func TestMarketRelayDetailsDirectQuantityEntry(t *testing.T) {
 			fmt.Sprintf("%-24s %s", "Sell broker + sales tax", FormatDisplayCents(600*units)),
 			fmt.Sprintf("%-24s %s", "Net proceeds", FormatDisplayCents(19_400*units)),
 			fmt.Sprintf("%-24s %s ISK", "Net profit after fees", FormatDisplayCents(9_350*units)),
-			"[0-9] qty ≥1", "[Enter] done", "[Bksp] edit", "[+/-] qty", "[Esc/q] close", "[Ctrl+C] quit",
+			"[+/-] qty", "[?] keys", "[Esc/q] close", "[Ctrl+C] quit",
 		} {
 			if !strings.Contains(view, row) {
 				t.Fatalf("quantity %d missing %q:\n%s", units, row, view)
@@ -300,7 +300,7 @@ func TestMarketRelayDetailsQuantityEntryModalIsolation(t *testing.T) {
 			m.copyPrice = func(int64) error { copies++; return nil }
 			m, _ = relayKey(m, "i")
 			m, _ = relayKey(m, "123")
-			for _, key := range []string{"y", "b", "c", "d", "k", "?", "f2", "up", "down"} {
+			for _, key := range []string{"y", "b", "c", "d", "k", "f2", "up", "down"} {
 				var cmd tea.Cmd
 				m, cmd = relayKey(m, key)
 				if cmd != nil || m.detailsUnits != 123 || !m.detailsTyping || !m.showDetails || m.showHelp || m.showPalette || m.showRecent || m.snapshot != before || m.config.Market.MaxJumps != 0 || saves != 0 || copies != 0 {
@@ -333,6 +333,111 @@ func TestMarketRelayDetailsQuantityEntryModalIsolation(t *testing.T) {
 		m, _ = relayKey(m, "1000000")
 		if m.detailsUnits != 1 || m.detailsTyping {
 			t.Fatalf("numeric entry leaked into %s", mode)
+		}
+	}
+}
+
+func TestMarketRelayDetailsHelpReturnsToQuantityEntry(t *testing.T) {
+	for _, typing := range []bool{false, true} {
+		for _, close := range []string{"?", "esc", "q", "ctrl+c"} {
+			t.Run(fmt.Sprintf("typing=%t/close=%s", typing, close), func(t *testing.T) {
+				m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+				m.width, m.height = 80, 18
+				m.snapshot = relayTestSnapshot()
+				saves, copies := 0, 0
+				m.saveMaxJumps = func(int) error { saves++; return nil }
+				m.saveTheme = func(string) error { saves++; return nil }
+				m.copyPrice = func(int64) error { copies++; return nil }
+				m.devExport = func() tea.Msg { t.Fatal("help triggered an export"); return nil }
+				m, _ = relayKey(m, "i")
+				m, _ = relayKey(m, "123")
+				if !typing {
+					m, _ = relayKey(m, "enter")
+				}
+				before, detailsView := m, m.View()
+				m, cmd := relayKey(m, "?")
+				if cmd != nil || !m.showHelp || !m.showDetails || !strings.Contains(m.View(), "DETAILS KEYS") {
+					t.Fatal("Details-specific help did not open")
+				}
+				for _, key := range []string{"1", "1000", "+", "-", "enter", "backspace", "delete", "y", "b", "c", "d", "k", "i", "f2", "f3", "up", "down"} {
+					m, cmd = relayKey(m, key)
+					if cmd != nil || !m.showHelp || !m.showDetails || m.detailsUnits != 123 || m.detailsTyping != typing || m.snapshot != before.snapshot || m.config != before.config || m.runtime.configSnapshot() != before.config || m.showPalette || m.showRecent || saves != 0 || copies != 0 {
+						t.Fatalf("%q changed state behind Details help: %#v", key, m)
+					}
+				}
+				m, cmd = relayKey(m, close)
+				if close == "ctrl+c" {
+					if cmd == nil {
+						t.Fatal("Ctrl+C did not quit from Details help")
+					}
+					if _, ok := cmd().(tea.QuitMsg); !ok {
+						t.Fatal("Ctrl+C returned a non-quit command")
+					}
+					return
+				}
+				if cmd != nil || m.showHelp || !m.showDetails || m.detailsUnits != 123 || m.detailsTyping != typing || m.View() != detailsView {
+					t.Fatal("closing help did not restore Details and its entry state")
+				}
+				m, _ = relayKey(m, "4")
+				want := int64(4)
+				if typing {
+					want = 1234
+				}
+				if m.detailsUnits != want || !m.detailsTyping {
+					t.Fatalf("entry after help = %d, want %d", m.detailsUnits, want)
+				}
+			})
+		}
+	}
+}
+
+func TestMarketRelayDetailsEditableQuantityAndHelpFit(t *testing.T) {
+	for _, size := range [][2]int{{80, 18}, {100, 22}, {120, 30}} {
+		for _, tc := range []struct {
+			units, buy, sell int64
+		}{
+			{1, math.MaxInt64 / 4, math.MaxInt64 / 2},
+			{1_000_000, 10_000, 30_000},
+			{math.MaxInt64, 10_000, 30_000},
+		} {
+			for _, typing := range []bool{false, true} {
+				m := newMarketRelayModel(relayTestConfig(), false, make(chan tea.Msg))
+				m.width, m.height, m.showDetails = size[0], size[1], true
+				m.detailsUnits, m.detailsTyping = tc.units, typing
+				m.snapshot = &marketRelaySnapshot{hasBuy: true, hasSell: true, buyCents: tc.buy, sellCents: tc.sell, buyBroker: .004, broker: .02, tax: .01, buyLocation: "structure"}
+				quantity := FormatDisplayUnits(tc.units)
+				if typing {
+					quantity += "▏"
+				}
+				view := m.View()
+				for _, want := range []string{"Quantity: [" + quantity + "]  type to change", "Structure: 0.5% SCC + 100 ISK minimum despite configured rate.", "[?] keys", "[Esc/q] close", "[Ctrl+C] quit"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("%v quantity %d missing %q:\n%s", size, tc.units, want, view)
+					}
+				}
+				if cost, revenue, net, ok := profitExample(tc.buy, tc.sell, tc.units, .004, .02, .01, "structure"); ok {
+					for _, want := range []string{FormatDisplayCents(cost), FormatDisplayCents(revenue), FormatDisplayCents(net) + " ISK", "Example only; available volume and fills are not checked."} {
+						if !strings.Contains(view, want) {
+							t.Fatalf("%v quantity %d clipped costs or disclaimer %q:\n%s", size, tc.units, want, view)
+						}
+					}
+				} else if !strings.Contains(view, "exceeds the supported amount") {
+					t.Fatal("overflow warning missing")
+				}
+				if lipgloss.Width(view) > size[0] || lipgloss.Height(view) != size[1] || strings.Contains(view, "\x1b[") {
+					t.Fatalf("Details overflowed or used color at %v:\n%s", size, view)
+				}
+				m, _ = relayKey(m, "?")
+				view = m.View()
+				for _, want := range []string{"DETAILS KEYS", "totals as you type", "First digit replaces quantity; next digits append.", "Enter", "Finish entry; next digit starts a new quantity.", "Backspace/Delete", "Remove last digit; quantity stays at least 1.", "+/-", "Change by one unit and finish entry.", "no commas or decimals", "9,223,372,036,854,775,807 are ignored.", "Back to Details; keep your entry.", "Close Details when help is closed.", "Quit from any view.", "[?/Esc/q] back to Details", "[Ctrl+C] quit"} {
+					if !strings.Contains(view, want) {
+						t.Fatalf("%v Details help missing %q:\n%s", size, want, view)
+					}
+				}
+				if lipgloss.Width(view) > size[0] || lipgloss.Height(view) != size[1] || strings.Contains(view, "\x1b[") || strings.Contains(view, "COPY PRICES") || strings.Contains(view, "DISTANCE") {
+					t.Fatalf("Details help overflowed, used color, or showed dashboard shortcuts at %v:\n%s", size, view)
+				}
+			}
 		}
 	}
 }
@@ -428,7 +533,7 @@ func TestProfitTableIncludesOneUnit(t *testing.T) {
 					t.Fatal("Details did not stay open")
 				}
 				view := m.View()
-				assertVisibleRow(view, fmt.Sprintf("TRADE COSTS  ·  Quantity: %d  ·  ISK", i+1))
+				assertVisibleRow(view, fmt.Sprintf("TRADE COSTS · ISK Quantity: [%d]  type to change", i+1))
 				for j, label := range []string{"Purchase value", "Buy broker fee", "Total buy cost", "Sale value", "Sell broker + sales tax", "Net proceeds", "Net profit after fees"} {
 					row := fmt.Sprintf("%-24s %s", label, FormatDisplayCents(values[j]))
 					if j == 6 {
