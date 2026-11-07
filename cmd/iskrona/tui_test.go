@@ -158,6 +158,7 @@ func TestMarketRelayAdjustsMaxJumpsWithPlusMinus(t *testing.T) {
 		saved = append(saved, maxJumps)
 		return nil
 	}, true, make(chan tea.Msg))
+	m.copyPrice = func(int64) error { return nil }
 	orders := []Order{
 		{PriceCents: 200, Bid: false, Jumps: 0},
 		{PriceCents: 100, Bid: true, Jumps: 0},
@@ -238,6 +239,52 @@ func TestMarketRelayJumpChangeDoesNotAutoCopy(t *testing.T) {
 	got := updated.(marketRelayModel)
 	if copies != 0 || strings.Contains(got.status, "copied") {
 		t.Fatalf("distance change copied a price: copies = %d, status = %q", copies, got.status)
+	}
+}
+
+func TestMarketRelayJumpChangeCopiesChangedRecommendation(t *testing.T) {
+	orders := []Order{
+		{PriceCents: 200, Jumps: 0}, {PriceCents: 100, Bid: true, Jumps: 0},
+		{PriceCents: 50, Jumps: 1}, {PriceCents: 150, Bid: true, Jumps: 1},
+	}
+	for _, tc := range []struct {
+		name, mode string
+		clipboard  bool
+		orders     []Order
+		fail       bool
+		want       int64
+	}{
+		{name: "sell", mode: "sell", clipboard: true, orders: orders, want: 49},
+		{name: "buy", mode: "buy", clipboard: true, orders: orders, want: 151},
+		{name: "disabled", mode: "sell", orders: orders},
+		{name: "other side changed", mode: "buy", clipboard: true, orders: orders[:3]},
+		{name: "unavailable", mode: "buy", clipboard: true, orders: []Order{{PriceCents: 50, Jumps: 1}}},
+		{name: "becomes available", mode: "buy", clipboard: true, orders: []Order{{PriceCents: 150, Bid: true, Jumps: 1}}, want: 151},
+		{name: "clipboard failure", mode: "sell", clipboard: true, orders: orders, fail: true, want: 49},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := relayTestConfig()
+			c.Display.CopyMode = tc.mode
+			m := newMarketRelayModel(c, tc.clipboard, make(chan tea.Msg))
+			m.orders = tc.orders
+			m.snapshot = marketRelaySnapshotForOrders("Tritanium", m.orders, c)
+			var copied []int64
+			m.copyPrice = func(value int64) error {
+				copied = append(copied, value)
+				if tc.fail {
+					return errors.New("clipboard failed")
+				}
+				return nil
+			}
+			updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("+")})
+			got := updated.(marketRelayModel)
+			if (tc.want == 0 && len(copied) != 0) || (tc.want != 0 && !slices.Equal(copied, []int64{tc.want})) {
+				t.Fatalf("copied = %v, want %d", copied, tc.want)
+			}
+			if got.config.Market.MaxJumps != 1 || got.isError != tc.fail || (tc.fail && got.status != "Clipboard unavailable") {
+				t.Fatalf("max jumps = %d, status = %q, error = %t", got.config.Market.MaxJumps, got.status, got.isError)
+			}
+		})
 	}
 }
 
