@@ -27,7 +27,7 @@ func TestMarketRelayDetailsCostBreakdown(t *testing.T) {
 			m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
 			m.snapshot = &marketRelaySnapshot{buyCents: tc.buy, sellCents: tc.sell, hasBuy: true, hasSell: true, buyBroker: tc.buyBroker, broker: tc.broker, tax: tc.tax}
 			lines := m.details(newMarketRelayStyles(false, "default"))
-			if !strings.Contains(lines[3], FormatDisplayUnits(tc.units)+" units") {
+			if !strings.Contains(lines[3], FormatDisplayUnits(tc.units)+" unit") {
 				t.Fatalf("quantity = %q", lines[3])
 			}
 			for i, label := range []string{"Purchase value", "Buy broker fee", "Total buy cost", "Sale value", "Sell broker + sales tax", "Net proceeds", "Net profit after fees"} {
