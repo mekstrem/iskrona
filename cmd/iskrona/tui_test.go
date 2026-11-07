@@ -425,6 +425,45 @@ func TestMarketRelayFileHandlerUsesLatestRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestMarketRelayAutoCopyUsesDistanceWhenResultIsHandled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Tritanium.txt")
+	if err := os.WriteFile(path, []byte("price,bid,jumps,\n200.00,False,0,\n50.00,False,1,\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan tea.Msg, 2)
+	runtime := newMarketRelayRuntime(relayTestConfig())
+	m := newMarketRelayModelWithRuntime(runtime, func(int) error { return nil }, true, events)
+	var copied int64
+	m.copyPrice = func(value int64) error { copied = value; return nil }
+	if err := marketRelayFileHandler(context.Background(), runtime, true, events)(path); err != nil {
+		t.Fatal(err)
+	}
+	<-events // processing
+	result := <-events
+	if copied != 0 {
+		t.Fatalf("copied before result was handled: %d", copied)
+	}
+	m.adjustMaxJumps(1)
+	updated, _ := m.Update(result)
+	got := updated.(marketRelayModel)
+	if got.snapshot.sellCents != 4999 || copied != got.snapshot.sellCents || got.status != "Sell price copied automatically" {
+		t.Fatalf("snapshot = %#v, copied = %d, status = %q", got.snapshot, copied, got.status)
+	}
+}
+
+func TestMarketRelayAutoCopyFailureKeepsRecommendation(t *testing.T) {
+	m := newMarketRelayModel(relayTestConfig(), true, make(chan tea.Msg))
+	var attempted int64
+	m.copyPrice = func(value int64) error { attempted = value; return errors.New("clipboard failed") }
+	orders := []Order{{PriceCents: 20000}}
+	event := marketRelayEvent{snapshot: marketRelaySnapshotForOrders("Tritanium", orders, m.config), orders: orders, status: "Market data updated", autoCopy: true}
+	updated, _ := m.Update(event)
+	got := updated.(marketRelayModel)
+	if got.snapshot == nil || got.snapshot.sellCents != 19990 || attempted != got.snapshot.sellCents || !got.isError || got.status != "Clipboard unavailable; market analysis is still ready" {
+		t.Fatalf("snapshot = %#v, attempted = %d, status = %q, isError = %t", got.snapshot, attempted, got.status, got.isError)
+	}
+}
+
 func TestMarketRelayRuntimeConfigSynchronizesConcurrentAccess(t *testing.T) {
 	runtime := newMarketRelayRuntime(relayTestConfig())
 	done := make(chan struct{})

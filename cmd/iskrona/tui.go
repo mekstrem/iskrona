@@ -57,7 +57,7 @@ type marketRelayEvent struct {
 	orders     []Order
 	status     string
 	isError    bool
-	copied     bool
+	autoCopy   bool
 	scanStatus bool
 }
 
@@ -250,21 +250,7 @@ func marketRelayFileProcessor(ctx context.Context, runtime *marketRelayRuntime, 
 		c := runtime.configSnapshot()
 		snapshot := marketRelaySnapshotForOrders(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)), orders, c)
 
-		status := "Market data updated"
-		copied, copyFailed := false, false
-		if clipboardOK {
-			value, label := snapshot.copyValue(c.Display.CopyMode)
-			if value > 0 {
-				if err := CopyText(FormatCents(value)); err != nil {
-					status = "Clipboard unavailable; market analysis is still ready"
-					copyFailed = true
-				} else {
-					status = fmt.Sprintf("%s copied automatically", label)
-					copied = true
-				}
-			}
-		}
-		sendMarketRelayEvent(ctx, events, marketRelayEvent{snapshot: snapshot, orders: orders, status: status, copied: copied, isError: copyFailed})
+		sendMarketRelayEvent(ctx, events, marketRelayEvent{snapshot: snapshot, orders: orders, status: "Market data updated", autoCopy: clipboardOK})
 		return nil
 	}
 }
@@ -411,20 +397,31 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scanError = msg.status
 			return m, waitForMarketRelayEvent(m.events)
 		}
+		copied := false
 		if msg.snapshot != nil {
-			m.recent = append([]marketRelaySnapshot{*msg.snapshot}, m.recent...)
-			if len(m.recent) > 5 {
-				m.recent = m.recent[:5]
-			}
 			m.orders = msg.orders
 			m.snapshot = msg.snapshot
 			if msg.orders != nil {
 				m.config = m.runtime.configSnapshot()
 				m.snapshot = marketRelaySnapshotForOrders(msg.snapshot.item, msg.orders, m.config)
 			}
+			m.recent = append([]marketRelaySnapshot{*m.snapshot}, m.recent...)
+			if len(m.recent) > 5 {
+				m.recent = m.recent[:5]
+			}
+			if msg.autoCopy {
+				value, label := m.snapshot.copyValue(m.config.Display.CopyMode)
+				if value > 0 {
+					if err := m.copyPrice(value); err != nil {
+						msg.status, msg.isError = "Clipboard unavailable; market analysis is still ready", true
+					} else {
+						msg.status, copied = fmt.Sprintf("%s copied automatically", label), true
+					}
+				}
+			}
 		}
 		m.status, m.isError = msg.status, msg.isError
-		if msg.isError || msg.copied {
+		if msg.isError || copied {
 			_, cmd := m.notify()
 			return m, tea.Batch(waitForMarketRelayEvent(m.events), cmd)
 		}
