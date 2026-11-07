@@ -52,11 +52,12 @@ type marketRelaySnapshot struct {
 }
 
 type marketRelayEvent struct {
-	snapshot *marketRelaySnapshot
-	orders   []Order
-	status   string
-	isError  bool
-	copied   bool
+	snapshot   *marketRelaySnapshot
+	orders     []Order
+	status     string
+	isError    bool
+	copied     bool
+	scanStatus bool
 }
 
 // marketRelayRuntime is shared by the Bubble Tea event loop and the directory
@@ -113,6 +114,7 @@ type marketRelayModel struct {
 	toast         string
 	toastID       uint64
 	lastError     string
+	scanError     string
 	devExport     tea.Cmd
 	checkUpdate   func() string
 	updateVersion string
@@ -171,7 +173,11 @@ func runMarketRelay(configPath string, c Config, clipboardOK bool) error {
 		err := watchDirectoryWithOptions(ctx, c.Market.Marketlogs, func(path string, signature fileSignature) error {
 			return process(path, &signature)
 		}, func() { close(watcherReady) }, func(err error) {
-			sendMarketRelayEvent(ctx, events, marketRelayEvent{status: fmt.Sprintf("%v; retrying", err), isError: true})
+			status := ""
+			if err != nil {
+				status = fmt.Sprintf("%v; retrying", err)
+			}
+			sendMarketRelayEvent(ctx, events, marketRelayEvent{status: status, scanStatus: true})
 		})
 		if err != nil && !errors.Is(err, context.Canceled) {
 			sendMarketRelayEvent(ctx, events, marketRelayEvent{status: err.Error(), isError: true})
@@ -399,6 +405,10 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	case marketRelayEvent:
+		if msg.scanStatus {
+			m.scanError = msg.status
+			return m, waitForMarketRelayEvent(m.events)
+		}
 		if msg.snapshot != nil {
 			m.recent = append([]marketRelaySnapshot{*msg.snapshot}, m.recent...)
 			if len(m.recent) > 5 {
@@ -585,9 +595,12 @@ func (m marketRelayModel) View() string {
 		if m.lastError != "" {
 			status = "Last error: " + m.lastError + "  ·  i details"
 		}
+		if m.scanError != "" {
+			status = m.scanError
+		}
 	}
 	status = relayClip(status, contentWidth)
-	if m.isError && m.toast != "" {
+	if (m.isError && m.toast != "") || (m.toast == "" && m.scanError != "") {
 		status = styles.error.Render(status)
 	} else {
 		status = styles.muted.Render(status)
