@@ -43,6 +43,32 @@ func TestMarketRelayDetailsCostBreakdown(t *testing.T) {
 	}
 }
 
+func TestDetailsStructureSurchargeNotice(t *testing.T) {
+	for _, tc := range []struct {
+		location string
+		rate     float64
+		notice   bool
+	}{
+		{"structure", 0, true},
+		{"structure", .004, true},
+		{"structure", .005, false},
+		{"npc", 0, false},
+	} {
+		for _, snapshot := range []bool{false, true} {
+			c := relayTestConfig()
+			c.Fees.BuyLocation, c.Fees.BuyBroker = tc.location, tc.rate
+			m := newMarketRelayModel(c, true, make(chan tea.Msg))
+			if snapshot {
+				m.snapshot = &marketRelaySnapshot{buyLocation: tc.location, buyBroker: tc.rate}
+			}
+			text := strings.Join(m.details(newMarketRelayStyles(false, "default")), "\n")
+			if got := strings.Contains(text, "0.5% SCC + 100 ISK minimum"); got != tc.notice {
+				t.Errorf("location=%s rate=%g snapshot=%v: notice=%v", tc.location, tc.rate, snapshot, got)
+			}
+		}
+	}
+}
+
 func TestMarketRelayDetailsCostsRemainVisibleAtSupportedSizes(t *testing.T) {
 	for _, size := range [][2]int{{80, 18}, {100, 22}, {120, 30}, {180, 24}} {
 		m := newMarketRelayModel(relayTestConfig(), false, make(chan tea.Msg))
@@ -96,7 +122,7 @@ func TestProfitExamplesRejectOverflow(t *testing.T) {
 		{math.MaxInt64 / 2, 1, 1, 2, 0, 0},
 		{1, 1, 1, math.NaN(), 0, 0},
 	} {
-		if _, _, _, ok := profitExample(tc.buy, tc.sell, tc.units, tc.buyBroker, tc.broker, tc.tax); ok {
+		if _, _, _, ok := profitExample(tc.buy, tc.sell, tc.units, tc.buyBroker, tc.broker, tc.tax, "npc"); ok {
 			t.Fatalf("accepted overflow: %+v", tc)
 		}
 	}

@@ -113,6 +113,7 @@ max_jumps = 0
 
 [fees]
 buy_broker = 0.005
+buy_location = "structure"
 broker = 0.02
 sales_tax = 0.01
 
@@ -132,7 +133,7 @@ Press `F2` on the dashboard to cycle through Default â†’ Caldari (steel blue) â†
 
 `iskrona login` reuses saved authorization when possible; otherwise it opens your browser for EVE SSO using the local callback `http://localhost:8765/callback`. The bundled EVE client ID is public; the app registration must retain this exact callback URL.
 
-ISKrona requests your character's skills and standings, and uses Accounting, Broker Relations, and the selected station's NPC corporation and faction standings to calculate fees. The selected station defaults to Jita IV - Moon 4 - Caldari Navy Assembly Plant. `broker` is the sell-order broker fee; `buy_broker` is the total buy-order broker fee, defaulting to 0.5% for the assumed player-owned structure. Structures may charge more, so set `buy_broker` to the actual total rate (or the applicable NPC rate). Login updates `broker` and `sales_tax` from NPC data but leaves `buy_broker` unchanged; structure fees must be entered manually. Rerun `iskrona login` after skills or standings change.
+ISKrona requests your character's skills and standings, and uses Accounting, Broker Relations, and the selected station's NPC corporation and faction standings to calculate fees. The selected station defaults to Jita IV - Moon 4 - Caldari Navy Assembly Plant. `broker` is the sell-order broker fee. `buy_location` defaults to `"structure"`; set it to `"npc"` for an NPC buy order. `buy_broker` is the total buy-order rate, defaulting to 0.5%. For structures it includes the 0.5% SCC surcharge: the structure broker component is the remaining rate, with a 100 ISK minimum per order, plus the surcharge. Rates below 0.5% remain accepted, but the full 0.5% surcharge and 100 ISK broker minimum still apply. Set the total rate to match the structure; for NPC stations enter the applicable broker percentage. Login updates `broker` and `sales_tax` from NPC data but leaves the buy settings unchanged. The margin estimates a one-unit buy order; profit examples apply the minimum once to the whole order. Rerun `iskrona login` after skills or standings change.
 
 ## Clipboard and troubleshooting
 
