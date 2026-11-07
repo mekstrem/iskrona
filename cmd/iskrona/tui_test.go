@@ -810,8 +810,7 @@ func TestMarketRelayProfitColorsPreserveLayoutAndNoColor(t *testing.T) {
 			if ansi.Strip(colored) != plain || strings.Contains(plain, "\x1b[") || lipgloss.Width(colored) != lipgloss.Width(plain) {
 				t.Fatalf("profit styling changed layout at width %d:\n%s\n%s", width, colored, plain)
 			}
-			units := exampleUnits(10_000, 100_000_000)
-			_, _, net, _ := profitExample(10_000, sell, units, 0, 0, 0)
+			_, _, net, _ := profitExample(10_000, sell, 1, 0, 0, 0)
 			want := newMarketRelayStyles(true, "default").margin(float64(net)).Render(FormatDisplayCents(net) + " ISK")
 			row := strings.Split(colored, "\n")[1]
 			prefix, found := strings.CutSuffix(row, want)
@@ -830,7 +829,13 @@ func TestMarketRelayProfitColorsPreserveLayoutAndNoColor(t *testing.T) {
 					t.Fatalf("color changed View layout, width %d details %t", width, details)
 				}
 				if width == 120 || details {
-					if !strings.Contains(coloredView, want) {
+					viewWant := want
+					if details {
+						units := exampleUnits(10_000, 100_000_000)
+						_, _, detailsNet, _ := profitExample(10_000, sell, units, 0, 0, 0)
+						viewWant = newMarketRelayStyles(true, "default").margin(float64(detailsNet)).Render(FormatDisplayCents(detailsNet) + " ISK")
+					}
+					if !strings.Contains(coloredView, viewWant) {
 						t.Fatal("semantic net profit color missing from dashboard/details")
 					}
 				}
