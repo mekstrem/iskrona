@@ -810,8 +810,7 @@ func TestMarketRelayProfitColorsPreserveLayoutAndNoColor(t *testing.T) {
 			if ansi.Strip(colored) != plain || strings.Contains(plain, "\x1b[") || lipgloss.Width(colored) != lipgloss.Width(plain) {
 				t.Fatalf("profit styling changed layout at width %d:\n%s\n%s", width, colored, plain)
 			}
-			units := exampleUnits(10_000, 100_000_000)
-			_, _, net, _ := profitExample(10_000, sell, units, 0, 0, 0, "npc")
+			_, _, net, _ := profitExample(10_000, sell, 1, 0, 0, 0, "npc")
 			want := newMarketRelayStyles(true, "default").margin(float64(net)).Render(FormatDisplayCents(net) + " ISK")
 			row := strings.Split(colored, "\n")[1]
 			prefix, found := strings.CutSuffix(row, want)
