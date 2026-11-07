@@ -102,12 +102,36 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 		return commandError(err)
 	}
 	broker, tax, accounting, brokerRelations := deriveFees(skills, standings, station)
-	if err := updateConfig(path, func(cfg *Config) error {
-		if err := c.store.Set("iskrona", credentialKey(character.ID), token.RefreshToken); err != nil {
+	if err := withConfigLock(path, func(path string) error {
+		cfg, _, err := loadConfig(path)
+		if err != nil {
+			return err
+		}
+		key := credentialKey(character.ID)
+		previous, getErr := c.store.Get("iskrona", key)
+		if getErr != nil && !errors.Is(getErr, keyring.ErrNotFound) {
+			return fmt.Errorf("read EVE authorization from credential store: %w", getErr)
+		}
+		if err := c.store.Set("iskrona", key, token.RefreshToken); err != nil {
 			return fmt.Errorf("save EVE authorization in credential store: %w", err)
 		}
 		cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
 		cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
+		if err := saveConfig(path, cfg); err != nil {
+			var rollbackErr error
+			if getErr == nil {
+				rollbackErr = c.store.Set("iskrona", key, previous)
+			} else {
+				rollbackErr = c.store.Delete("iskrona", key)
+				if errors.Is(rollbackErr, keyring.ErrNotFound) {
+					rollbackErr = nil
+				}
+			}
+			if rollbackErr != nil {
+				return errors.Join(err, fmt.Errorf("restore EVE authorization in credential store: %w", rollbackErr))
+			}
+			return err
+		}
 		return nil
 	}); err != nil {
 		return commandError(err)
