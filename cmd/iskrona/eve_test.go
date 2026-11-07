@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -323,6 +324,214 @@ func TestLoginDoesNotPersistConfigWhenCredentialSaveFails(t *testing.T) {
 	if got != initial {
 		t.Fatalf("config changed after credential failure: got %#v, want %#v", got, initial)
 	}
+}
+
+func TestFirstLoginConfigSaveFailureLeavesNoCredentialAfterLogout(t *testing.T) {
+	path := useIsolatedUserConfigDir(t)
+	initial := DefaultConfig()
+	if err := SaveConfig(path, initial); err != nil {
+		t.Fatal(err)
+	}
+	oldAPI, oldToken := eveAPIBase, eveSSOToken
+	defer func() { eveAPIBase, eveSSOToken = oldAPI, oldToken }()
+	eveAPIBase, eveSSOToken = "https://esi.test/latest", "https://sso.test/token"
+	store := &recordingCredentialStore{}
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"CHARACTER:EVE:42","name":"Mikko"}`))
+	c := &eveClient{store: store, loginTimeout: time.Second, openBrowser: func(raw string) error {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return err
+		}
+		resp, err := http.Get(eveCallbackURL + "?code=code&state=" + url.QueryEscape(u.Query().Get("state")))
+		if err == nil {
+			resp.Body.Close()
+		}
+		return err
+	}, httpClient: &http.Client{Transport: roundTripper(func(r *http.Request) *http.Response {
+		switch r.URL.Path {
+		case "/latest/universe/stations/60003760/":
+			return jsonResponse(http.StatusOK, `{"name":"Jita IV - Moon 4 - Caldari Navy Assembly Plant","owner":1000035,"race_id":1}`)
+		case "/token":
+			return jsonResponse(http.StatusOK, fmt.Sprintf(`{"access_token":"x.%s.y","refresh_token":"new-refresh"}`, payload))
+		case "/latest/characters/42/skills/":
+			return jsonResponse(http.StatusOK, `{"skills":[]}`)
+		case "/latest/characters/42/standings/":
+			if err := os.Rename(path, path+".backup"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0700); err != nil {
+				t.Fatal(err)
+			}
+			return jsonResponse(http.StatusOK, `[]`)
+		default:
+			t.Fatalf("unexpected request: %s", r.URL)
+			return nil
+		}
+	})}}
+	if err := c.login(context.Background(), io.Discard, ""); err == nil || !strings.Contains(err.Error(), "replace config") {
+		t.Fatalf("login error = %v", err)
+	}
+	key := "iskrona/eve-refresh-token-42"
+	if len(store.deleted) != 1 || store.deleted[0] != key {
+		t.Fatalf("rollback deletions = %v", store.deleted)
+	}
+	if _, ok := store.values[key]; ok {
+		t.Fatal("new credential remains after failed login")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(path+".backup", path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil || got != initial {
+		t.Fatalf("config = %#v, error = %v", got, err)
+	}
+	if err := c.logout(io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.deleted) != 1 {
+		t.Fatalf("logout unexpectedly deleted a credential: %v", store.deleted)
+	}
+	if _, ok := store.values[key]; ok {
+		t.Fatal("credential remains after logout")
+	}
+}
+
+func TestLoginConfigSaveFailureRollsBackAuthorization(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		missing     bool
+		getErr      error
+		rollbackErr error
+	}{
+		{name: "restore existing"},
+		{name: "remove new", missing: true},
+		{name: "read failure", getErr: errors.New("read denied")},
+		{name: "restore failure", rollbackErr: errors.New("restore denied")},
+		{name: "delete failure", missing: true, rollbackErr: errors.New("delete denied")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := useIsolatedUserConfigDir(t)
+			initial := DefaultConfig()
+			initial.EVE = EVEConfig{CharacterID: 42, CharacterName: "Mikko"}
+			if err := SaveConfig(path, initial); err != nil {
+				t.Fatal(err)
+			}
+			oldAPI, oldToken := eveAPIBase, eveSSOToken
+			defer func() { eveAPIBase, eveSSOToken = oldAPI, oldToken }()
+			eveAPIBase, eveSSOToken = "https://esi.test/latest", "https://sso.test/token"
+			store := &rollbackTestStore{memoryCredentialStore: memoryCredentialStore{"iskrona/eve-refresh-token-42": "old-refresh"}, missing: tc.missing, getErr: tc.getErr, rollbackErr: tc.rollbackErr}
+			c := &eveClient{store: store, httpClient: &http.Client{Transport: roundTripper(func(r *http.Request) *http.Response {
+				switch r.URL.Path {
+				case "/latest/universe/stations/60003760/":
+					return jsonResponse(http.StatusOK, `{"name":"Jita IV - Moon 4 - Caldari Navy Assembly Plant","owner":1000035,"race_id":1}`)
+				case "/token":
+					return jsonResponse(http.StatusOK, `{"access_token":"access","refresh_token":"new-refresh"}`)
+				case "/latest/characters/42/skills/":
+					return jsonResponse(http.StatusOK, `{"skills":[]}`)
+				case "/latest/characters/42/standings/":
+					if tc.getErr == nil {
+						if err := os.Rename(path, path+".backup"); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Mkdir(path, 0700); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return jsonResponse(http.StatusOK, `[]`)
+				default:
+					t.Fatalf("unexpected request: %s", r.URL)
+					return nil
+				}
+			})}}
+			err := c.login(context.Background(), io.Discard, "")
+			if err == nil {
+				t.Fatal("login succeeded")
+			}
+			if tc.getErr != nil {
+				if !errors.Is(err, tc.getErr) {
+					t.Fatalf("login error = %v", err)
+				}
+			} else {
+				if !strings.Contains(err.Error(), "replace config") {
+					t.Fatalf("login error = %v", err)
+				}
+				if tc.rollbackErr != nil && !errors.Is(err, tc.rollbackErr) {
+					t.Fatalf("rollback error missing: %v", err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(path+".backup", path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := LoadConfig(path)
+			if err != nil || got != initial {
+				t.Fatalf("config = %#v, error = %v", got, err)
+			}
+			value, exists := store.memoryCredentialStore["iskrona/eve-refresh-token-42"]
+			if tc.rollbackErr != nil {
+				if !exists || value != "new-refresh" {
+					t.Fatalf("credential = %q, exists = %v", value, exists)
+				}
+			} else if tc.missing {
+				if exists {
+					t.Fatalf("new credential remains: %q", value)
+				}
+			} else if !exists || value != "old-refresh" {
+				t.Fatalf("credential = %q, exists = %v", value, exists)
+			}
+			store.rollbackErr = nil
+			if err := c.logout(io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := store.memoryCredentialStore["iskrona/eve-refresh-token-42"]; exists {
+				t.Fatal("credential remains after logout")
+			}
+			got, err = LoadConfig(path)
+			if err != nil || got.EVE != (EVEConfig{}) {
+				t.Fatalf("config after logout = %#v, error = %v", got, err)
+			}
+		})
+	}
+}
+
+type rollbackTestStore struct {
+	memoryCredentialStore
+	gets                int
+	missing             bool
+	getErr, rollbackErr error
+}
+
+func (s *rollbackTestStore) Get(service, user string) (string, error) {
+	s.gets++
+	if s.gets == 2 {
+		if s.getErr != nil {
+			return "", s.getErr
+		}
+		if s.missing {
+			delete(s.memoryCredentialStore, service+"/"+user)
+			return "", keyring.ErrNotFound
+		}
+	}
+	return s.memoryCredentialStore.Get(service, user)
+}
+
+func (s *rollbackTestStore) Set(service, user, value string) error {
+	if value == "old-refresh" && s.rollbackErr != nil {
+		return s.rollbackErr
+	}
+	return s.memoryCredentialStore.Set(service, user, value)
+}
+
+func (s *rollbackTestStore) Delete(service, user string) error {
+	if s.rollbackErr != nil {
+		return s.rollbackErr
+	}
+	return s.memoryCredentialStore.Delete(service, user)
 }
 
 func TestLogoutDeletesCredentialAndClearsOnlyEVEMetadata(t *testing.T) {

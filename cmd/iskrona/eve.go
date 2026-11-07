@@ -104,10 +104,27 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 	broker, tax, accounting, brokerRelations := deriveFees(skills, standings, station)
 	cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
 	cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
-	if err := c.store.Set("iskrona", credentialKey(character.ID), token.RefreshToken); err != nil {
+	key := credentialKey(character.ID)
+	previous, getErr := c.store.Get("iskrona", key)
+	if getErr != nil && !errors.Is(getErr, keyring.ErrNotFound) {
+		return commandError(fmt.Errorf("read EVE authorization from credential store: %w", getErr))
+	}
+	if err := c.store.Set("iskrona", key, token.RefreshToken); err != nil {
 		return commandError(fmt.Errorf("save EVE authorization in credential store: %w", err))
 	}
 	if err := SaveConfig(path, cfg); err != nil {
+		var rollbackErr error
+		if getErr == nil {
+			rollbackErr = c.store.Set("iskrona", key, previous)
+		} else {
+			rollbackErr = c.store.Delete("iskrona", key)
+			if errors.Is(rollbackErr, keyring.ErrNotFound) {
+				rollbackErr = nil
+			}
+		}
+		if rollbackErr != nil {
+			return commandError(errors.Join(err, fmt.Errorf("restore EVE authorization in credential store: %w", rollbackErr)))
+		}
 		return commandError(err)
 	}
 	fmt.Fprintf(out, "EVE fees updated\nCharacter: %s\nStation: %s\nAccounting: %d\nBroker Relations: %d\nBroker fee: %.3f%%\nSales tax: %.3f%%\n", character.Name, station.Name, accounting, brokerRelations, broker*100, tax*100)
