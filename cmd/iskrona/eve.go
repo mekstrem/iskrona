@@ -102,12 +102,14 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 		return commandError(err)
 	}
 	broker, tax, accounting, brokerRelations := deriveFees(skills, standings, station)
-	cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
-	cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
-	if err := c.store.Set("iskrona", credentialKey(character.ID), token.RefreshToken); err != nil {
-		return commandError(fmt.Errorf("save EVE authorization in credential store: %w", err))
-	}
-	if err := SaveConfig(path, cfg); err != nil {
+	if err := updateConfig(path, func(cfg *Config) error {
+		if err := c.store.Set("iskrona", credentialKey(character.ID), token.RefreshToken); err != nil {
+			return fmt.Errorf("save EVE authorization in credential store: %w", err)
+		}
+		cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
+		cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
+		return nil
+	}); err != nil {
 		return commandError(err)
 	}
 	fmt.Fprintf(out, "EVE fees updated\nCharacter: %s\nStation: %s\nAccounting: %d\nBroker Relations: %d\nBroker fee: %.3f%%\nSales tax: %.3f%%\n", character.Name, station.Name, accounting, brokerRelations, broker*100, tax*100)
@@ -133,17 +135,15 @@ func (c *eveClient) logout(out io.Writer) error {
 	if err != nil {
 		return commandError(err)
 	}
-	cfg, err := LoadConfig(path)
-	if err != nil {
-		return commandError(err)
-	}
-	if cfg.EVE.CharacterID != 0 {
-		if err := c.store.Delete("iskrona", credentialKey(cfg.EVE.CharacterID)); err != nil && !errors.Is(err, keyring.ErrNotFound) {
-			return commandError(fmt.Errorf("remove EVE authorization: %w", err))
+	if err := updateConfig(path, func(cfg *Config) error {
+		if cfg.EVE.CharacterID != 0 {
+			if err := c.store.Delete("iskrona", credentialKey(cfg.EVE.CharacterID)); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+				return fmt.Errorf("remove EVE authorization: %w", err)
+			}
 		}
-	}
-	cfg.EVE = EVEConfig{}
-	if err := SaveConfig(path, cfg); err != nil {
+		cfg.EVE = EVEConfig{}
+		return nil
+	}); err != nil {
 		return commandError(err)
 	}
 	fmt.Fprintln(out, "EVE authorization removed")

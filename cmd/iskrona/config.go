@@ -88,12 +88,44 @@ func DefaultMarketlogsPath() (string, error) {
 
 func LoadConfig(path string) (Config, error) {
 	if path == "" {
-		var e error
-		path, e = ConfigPath()
-		if e != nil {
-			return Config{}, e
+		var err error
+		path, err = ConfigPath()
+		if err != nil {
+			return Config{}, err
 		}
 	}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		c, legacy, err := decodeConfig(data)
+		if err != nil {
+			return Config{}, fmt.Errorf("decode config %s: %w", path, err)
+		}
+		if !legacy {
+			return c, nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Config{}, fmt.Errorf("read config %s: %w", path, err)
+	}
+	var c Config
+	err = withConfigLock(path, func(path string) error {
+		var needsSave bool
+		var err error
+		c, needsSave, err = loadConfig(path)
+		if err != nil {
+			return err
+		}
+		if needsSave {
+			return saveConfig(path, c)
+		}
+		return nil
+	})
+	if err != nil {
+		return Config{}, err
+	}
+	return c, err
+}
+
+func loadConfig(path string) (Config, bool, error) {
 	data, e := os.ReadFile(path)
 	if errors.Is(e, os.ErrNotExist) {
 		if oldPath, oldErr := legacyConfigPath(); oldErr == nil && oldPath != path {
@@ -105,17 +137,12 @@ func LoadConfig(path string) (Config, error) {
 	if e == nil {
 		c, legacy, err := decodeConfig(data)
 		if err != nil {
-			return Config{}, fmt.Errorf("decode config %s: %w", path, err)
+			return Config{}, false, fmt.Errorf("decode config %s: %w", path, err)
 		}
-		if legacy {
-			if err := SaveConfig(path, c); err != nil {
-				return Config{}, fmt.Errorf("migrate config %s: %w", path, err)
-			}
-		}
-		return c, nil
+		return c, legacy, nil
 	}
 	if !errors.Is(e, os.ErrNotExist) {
-		return Config{}, fmt.Errorf("read config %s: %w", path, e)
+		return Config{}, false, fmt.Errorf("read config %s: %w", path, e)
 	}
 	c := DefaultConfig()
 	if p, se := DefaultMarketlogsPath(); se == nil {
@@ -123,10 +150,7 @@ func LoadConfig(path string) (Config, error) {
 			c.Market.Marketlogs = p
 		}
 	}
-	if e = SaveConfig(path, c); e != nil {
-		return Config{}, e
-	}
-	return c, nil
+	return c, true, nil
 }
 
 // decodeConfig reads both settings formats without migrating or writing files.
@@ -153,6 +177,10 @@ func decodeConfig(data []byte) (Config, bool, error) {
 }
 
 func SaveConfig(path string, c Config) error {
+	return withConfigLock(path, func(path string) error { return saveConfig(path, c) })
+}
+
+func saveConfig(path string, c Config) error {
 	if path == "" {
 		var e error
 		path, e = ConfigPath()
@@ -193,6 +221,42 @@ func SaveConfig(path string, c Config) error {
 	return nil
 }
 
+func withConfigLock(path string, fn func(string) error) error {
+	if path == "" {
+		var err error
+		path, err = ConfigPath()
+		if err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := lockConfigFile(f); err != nil {
+		return fmt.Errorf("lock config %s: %w", path, err)
+	}
+	defer unlockConfigFile(f)
+	return fn(path)
+}
+
+func updateConfig(path string, update func(*Config) error) error {
+	return withConfigLock(path, func(path string) error {
+		c, _, err := loadConfig(path)
+		if err != nil {
+			return err
+		}
+		if err := update(&c); err != nil {
+			return err
+		}
+		return saveConfig(path, c)
+	})
+}
+
 // saveMaxJumps updates only the persisted distance setting. Loading the saved
 // configuration first prevents temporary CLI overrides from leaking into the
 // user's defaults when the TUI changes the distance.
@@ -200,22 +264,12 @@ func saveMaxJumps(path string, maxJumps int) error {
 	if maxJumps < 0 {
 		return fmt.Errorf("market.max_jumps must be nonnegative (got %d)", maxJumps)
 	}
-	c, err := LoadConfig(path)
-	if err != nil {
-		return err
-	}
-	c.Market.MaxJumps = maxJumps
-	return SaveConfig(path, c)
+	return updateConfig(path, func(c *Config) error { c.Market.MaxJumps = maxJumps; return nil })
 }
 
 // Reload saved settings so per-run overrides never become defaults.
 func saveTheme(path, theme string) error {
-	c, err := LoadConfig(path)
-	if err != nil {
-		return err
-	}
-	c.Display.Theme = theme
-	return SaveConfig(path, c)
+	return updateConfig(path, func(c *Config) error { c.Display.Theme = theme; return nil })
 }
 
 func ResolveConfig(path string, o CLIOverrides) (Config, error) {
