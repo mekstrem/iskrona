@@ -453,10 +453,17 @@ func (m *marketRelayModel) adjustMaxJumps(delta int) {
 	}
 	m.runtime.setMaxJumps(next)
 	m.config = m.runtime.configSnapshot()
-	if m.snapshot != nil {
-		m.snapshot = marketRelaySnapshotForOrders(m.snapshot.item, m.orders, m.config)
-	}
 	m.status, m.isError = fmt.Sprintf("Max distance set to %d jumps", next), false
+	if m.snapshot != nil {
+		previous, _ := m.snapshot.copyValue(m.config.Display.CopyMode)
+		m.snapshot = marketRelaySnapshotForOrders(m.snapshot.item, m.orders, m.config)
+		value, _ := m.snapshot.copyValue(m.config.Display.CopyMode)
+		if m.clipboardOK && value > 0 && value != previous {
+			if err := m.copyPrice(value); err != nil {
+				m.status, m.isError = "Clipboard unavailable", true
+			}
+		}
+	}
 }
 
 func (m *marketRelayModel) cycleTheme() {
