@@ -25,9 +25,10 @@ type MarketConfig struct {
 	MaxJumps   int    `toml:"max_jumps"`
 }
 type FeeConfig struct {
-	BuyBroker float64 `toml:"buy_broker"`
-	Broker    float64 `toml:"broker"`
-	SalesTax  float64 `toml:"sales_tax"`
+	BuyLocation string  `toml:"buy_location"`
+	BuyBroker   float64 `toml:"buy_broker"`
+	Broker      float64 `toml:"broker"`
+	SalesTax    float64 `toml:"sales_tax"`
 }
 type DisplayConfig struct {
 	CopyMode string `toml:"copy_mode"`
@@ -62,7 +63,7 @@ type CLIOverrides struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Fees: FeeConfig{BuyBroker: .005, Broker: .02, SalesTax: .01}, Display: DisplayConfig{CopyMode: "sell", Color: true, Theme: "default"}}
+	return Config{Fees: FeeConfig{BuyLocation: "structure", BuyBroker: .005, Broker: .02, SalesTax: .01}, Display: DisplayConfig{CopyMode: "sell", Color: true, Theme: "default"}}
 }
 func ConfigPath() (string, error) {
 	d, e := os.UserConfigDir()
@@ -241,6 +242,9 @@ func ResolveConfig(path string, o CLIOverrides) (Config, error) {
 	return c, nil
 }
 func (c Config) Validate(required bool) error {
+	if c.Fees.BuyLocation != "" && c.Fees.BuyLocation != "structure" && c.Fees.BuyLocation != "npc" {
+		return errors.New("fees.buy_location must be structure or npc")
+	}
 	if c.Market.MaxJumps < 0 {
 		return fmt.Errorf("market.max_jumps must be nonnegative (got %d)", c.Market.MaxJumps)
 	}

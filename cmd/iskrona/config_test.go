@@ -245,6 +245,23 @@ func TestBuyBrokerConfigCompatibility(t *testing.T) {
 	}
 }
 
+func TestBuyLocationConfig(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"[fees]\nbuy_broker = 0.012\n", "structure"},
+		{"[fees]\nbuy_location = \"npc\"\n", "npc"},
+	} {
+		c, _, err := decodeConfig([]byte(tc.input))
+		if err != nil || c.Fees.BuyLocation != tc.want {
+			t.Fatalf("decode %q: location = %q, error = %v", tc.input, c.Fees.BuyLocation, err)
+		}
+	}
+	c := DefaultConfig()
+	c.Fees.BuyLocation = "unknown"
+	if err := c.Validate(false); err == nil {
+		t.Fatal("invalid buy location accepted")
+	}
+}
+
 func TestConfigThemeBackwardsCompatibility(t *testing.T) {
 	for _, data := range []string{
 		"[display]\ncopy_mode = \"buy\"\ncolor = true\n",

@@ -75,7 +75,7 @@ func TestMarketRelayDevPriceVariationChangesMargin(t *testing.T) {
 		if summary.BestBuy == nil || summary.BestSell == nil {
 			t.Fatal("expected eligible buy and sell orders")
 		}
-		margins[i] = CalculateMargin(summary.BuyCents, summary.SellCents, 0, 0, 0)
+		margins[i] = CalculateMargin(summary.BuyCents, summary.SellCents, 0, 0, 0, "npc")
 	}
 	if margins[0] <= margins[1] {
 		t.Fatalf("expected lower buy and higher sell offsets to increase margin: %v", margins)

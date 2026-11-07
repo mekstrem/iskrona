@@ -37,18 +37,19 @@ var isInteractiveTerminal = func() bool {
 }
 
 type marketRelaySnapshot struct {
-	item      string
-	orders    int
-	buyCents  int64
-	sellCents int64
-	hasBuy    bool
-	hasSell   bool
-	margin    float64
-	broker    float64
-	buyBroker float64
-	tax       float64
-	copyMode  string
-	maxJumps  int
+	item        string
+	orders      int
+	buyCents    int64
+	sellCents   int64
+	hasBuy      bool
+	hasSell     bool
+	margin      float64
+	broker      float64
+	buyBroker   float64
+	buyLocation string
+	tax         float64
+	copyMode    string
+	maxJumps    int
 }
 
 type marketRelayEvent struct {
@@ -265,20 +266,21 @@ func marketRelayFileProcessor(ctx context.Context, runtime *marketRelayRuntime, 
 func marketRelaySnapshotForOrders(item string, orders []Order, c Config) *marketRelaySnapshot {
 	summary := AnalyzeMarket(orders, c.Market.MaxJumps)
 	snapshot := &marketRelaySnapshot{
-		item:      item,
-		orders:    eligibleOrderCount(orders, c.Market.MaxJumps),
-		buyCents:  summary.BuyCents,
-		sellCents: summary.SellCents,
-		hasBuy:    summary.BestBuy != nil,
-		hasSell:   summary.BestSell != nil,
-		broker:    c.Fees.Broker,
-		buyBroker: c.Fees.BuyBroker,
-		tax:       c.Fees.SalesTax,
-		copyMode:  c.Display.CopyMode,
-		maxJumps:  c.Market.MaxJumps,
+		item:        item,
+		orders:      eligibleOrderCount(orders, c.Market.MaxJumps),
+		buyCents:    summary.BuyCents,
+		sellCents:   summary.SellCents,
+		hasBuy:      summary.BestBuy != nil,
+		hasSell:     summary.BestSell != nil,
+		broker:      c.Fees.Broker,
+		buyBroker:   c.Fees.BuyBroker,
+		buyLocation: c.Fees.BuyLocation,
+		tax:         c.Fees.SalesTax,
+		copyMode:    c.Display.CopyMode,
+		maxJumps:    c.Market.MaxJumps,
 	}
 	if snapshot.hasBuy && snapshot.hasSell {
-		snapshot.margin = CalculateMargin(snapshot.buyCents, snapshot.sellCents, c.Fees.BuyBroker, c.Fees.Broker, c.Fees.SalesTax)
+		snapshot.margin = CalculateMargin(snapshot.buyCents, snapshot.sellCents, c.Fees.BuyBroker, c.Fees.Broker, c.Fees.SalesTax, c.Fees.BuyLocation)
 	}
 	return snapshot
 }
@@ -733,7 +735,7 @@ func (m marketRelayModel) profitTable(styles marketRelayStyles) string {
 			units = previous * 2
 		}
 		previous = units
-		cost, revenue, net, ok := profitExample(m.snapshot.buyCents, m.snapshot.sellCents, units, m.snapshot.buyBroker, m.snapshot.broker, m.snapshot.tax)
+		cost, revenue, net, ok := profitExample(m.snapshot.buyCents, m.snapshot.sellCents, units, m.snapshot.buyBroker, m.snapshot.broker, m.snapshot.tax, m.snapshot.buyLocation)
 		if !ok {
 			lines = append(lines, styles.muted.Render("Profit example exceeds the supported amount."))
 			continue
