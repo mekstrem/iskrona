@@ -384,7 +384,7 @@ func startCallbackServer(expectedState string) (*http.Server, <-chan callbackRes
 			result <- callbackResult{err: errors.New("EVE login callback has no authorization code")}
 			return
 		}
-		fmt.Fprintln(w, "EVE login complete. You can close this page.")
+		fmt.Fprintln(w, "EVE authorization received. Return to the terminal for the final result. You can close this page.")
 		result <- callbackResult{code: code}
 	})
 	ln, err := net.Listen("tcp", server.Addr)
