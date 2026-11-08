@@ -13,6 +13,7 @@ import (
 )
 
 var replaceConfigFile = atomicReplaceFile
+var errUnknownConfigKey = errors.New("unknown key")
 
 type Config struct {
 	Market  MarketConfig  `toml:"market"`
@@ -99,7 +100,7 @@ func LoadConfig(path string) (Config, error) {
 	if err == nil {
 		c, legacy, err := decodeConfig(data)
 		if err != nil {
-			return Config{}, fmt.Errorf("decode config %s: %w", path, err)
+			return Config{}, fmt.Errorf("decode config %s: %w; run iskrona doctor", path, err)
 		}
 		if !legacy {
 			return c, nil
@@ -138,7 +139,7 @@ func loadConfig(path string) (Config, bool, error) {
 	if e == nil {
 		c, legacy, err := decodeConfig(data)
 		if err != nil {
-			return Config{}, false, fmt.Errorf("decode config %s: %w", path, err)
+			return Config{}, false, fmt.Errorf("decode config %s: %w; run iskrona doctor", path, err)
 		}
 		return c, legacy, nil
 	}
@@ -172,7 +173,7 @@ func decodeConfig(data []byte) (Config, bool, error) {
 		return Config{}, false, err
 	}
 	if u := meta.Undecoded(); len(u) > 0 {
-		return Config{}, false, fmt.Errorf("unknown key %q", u[0].String())
+		return Config{}, false, fmt.Errorf("%w %q", errUnknownConfigKey, u[0].String())
 	}
 	return c, false, nil
 }
