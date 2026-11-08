@@ -112,6 +112,19 @@ func runTUI(cmd *cobra.Command, overrides CLIOverrides) error {
 	if err != nil {
 		return commandError(err)
 	}
+	if c.Fees.Setup == "pending" && isInteractiveTerminal() {
+		completed, err := runFirstRunFeeSetup(cmd.Context(), p, c)
+		if err != nil {
+			return commandError(err)
+		}
+		if !completed {
+			return nil
+		}
+		c, err = ResolveConfig(p, overrides)
+		if err != nil {
+			return commandError(err)
+		}
+	}
 	ready := InitClipboard() == nil
 	if err := runMarketRelay(p, c, ready); err != nil {
 		return commandError(err)

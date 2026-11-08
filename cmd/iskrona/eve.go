@@ -74,6 +74,10 @@ func newLogoutCmd() *cobra.Command {
 }
 
 func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput string) error {
+	return c.loginFees(ctx, out, stationInput, false)
+}
+
+func (c *eveClient) loginFees(ctx context.Context, out io.Writer, stationInput string, firstRun bool) error {
 	if eveClientID == "" {
 		return commandError(errors.New("EVE SSO client ID is not configured in this build"))
 	}
@@ -107,6 +111,12 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 		if err != nil {
 			return err
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if firstRun && cfg.Fees.Setup != "pending" {
+			return errors.New("fee setup changed in another session; restart ISKrona")
+		}
 		key := credentialKey(character.ID)
 		previous, getErr := c.store.Get("iskrona", key)
 		if getErr != nil && !errors.Is(getErr, keyring.ErrNotFound) {
@@ -117,7 +127,11 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 		}
 		cfg.Fees.Broker, cfg.Fees.SalesTax = broker, tax
 		cfg.EVE = EVEConfig{CharacterID: character.ID, CharacterName: character.Name, StationID: station.ID, StationName: station.Name}
-		if err := saveConfig(path, cfg); err != nil {
+		err = ctx.Err()
+		if err == nil {
+			err = saveConfig(path, cfg)
+		}
+		if err != nil {
 			var rollbackErr error
 			if getErr == nil {
 				rollbackErr = c.store.Set("iskrona", key, previous)
@@ -137,6 +151,7 @@ func (c *eveClient) login(ctx context.Context, out io.Writer, stationInput strin
 		return commandError(err)
 	}
 	fmt.Fprintf(out, "EVE fees updated\nCharacter: %s\nStation: %s\nAccounting: %d\nBroker Relations: %d\nBroker fee: %.3f%%\nSales tax: %.3f%%\n", character.Name, station.Name, accounting, brokerRelations, broker*100, tax*100)
+	fmt.Fprintln(out, "Buy-order fees unchanged.")
 	return nil
 }
 
