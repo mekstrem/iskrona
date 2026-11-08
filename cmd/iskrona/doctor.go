@@ -61,7 +61,11 @@ func runDoctor(out io.Writer, path string, initClipboard func() error) bool {
 		var legacy bool
 		c, legacy, err = decodeConfig(data)
 		if err != nil {
-			report("FAIL", "config", fmt.Sprintf("%s: %v; correct the TOML and supported setting names.", path, err))
+			advice := "correct the TOML syntax or setting values."
+			if errors.Is(err, errUnknownConfigKey) {
+				advice = "this may be a typo or a setting from a newer version; upgrade iskrona or back up the config before editing it manually."
+			}
+			report("FAIL", "config", fmt.Sprintf("%s: %v; %s", path, err, advice))
 			configOK = false
 		} else if legacy || legacyPath {
 			report("WARN", "config", fmt.Sprintf("legacy settings at %s; move settings to the current iskrona config format/location. No migration performed.", path))

@@ -44,6 +44,28 @@ func TestDefaultCommandUsesTUIConfigAndOverrides(t *testing.T) {
 	}
 }
 
+func TestStartupConfigDecodeHint(t *testing.T) {
+	doctorEnvironment(t)
+	path, err := ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, config := range []string{"[market]\nmax_jump = 1\n", "[market\n"} {
+		if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+			t.Fatal(err)
+		}
+		for _, args := range [][]string{nil, {"tui"}} {
+			var out, stderr strings.Builder
+			if code := execute(args, &out, &stderr); code != 1 || !strings.Contains(stderr.String(), "run iskrona doctor") {
+				t.Fatalf("execute(%q): code %d, stderr %q", args, code, stderr.String())
+			}
+		}
+	}
+}
+
 func TestRootHelpAndArgumentValidation(t *testing.T) {
 	root := newRootCmd()
 	root.InitDefaultHelpCmd()

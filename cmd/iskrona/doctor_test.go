@@ -70,6 +70,43 @@ func TestDoctorChecks(t *testing.T) {
 	}
 }
 
+func TestDoctorConfigDecodeAdvice(t *testing.T) {
+	for _, tc := range []struct {
+		name, config string
+		wants        []string
+		unwanted     string
+	}{
+		{"unknown", "[market]\nmax_jump = 1\n", []string{"unknown key", "market.max_jump", "typo", "newer version", "upgrade", "back up", "manually"}, "correct the TOML syntax"},
+		{"malformed", "[market\n", []string{"FAIL config", "TOML syntax"}, "newer version"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(doctorEnvironment(t), "config.toml")
+			if err := os.WriteFile(path, []byte(tc.config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var out strings.Builder
+			if runDoctor(&out, path, func() error { return nil }) {
+				t.Fatal("doctor accepted invalid config")
+			}
+			for _, want := range tc.wants {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("missing %q in %s", want, out.String())
+				}
+			}
+			if strings.Contains(out.String(), tc.unwanted) {
+				t.Fatal(out.String())
+			}
+			got, err := os.ReadFile(path)
+			if err != nil || string(got) != tc.config {
+				t.Fatalf("config changed: %q, %v", got, err)
+			}
+			if _, err := os.Stat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("doctor created lock: %v", err)
+			}
+		})
+	}
+}
+
 func TestDoctorMissingAndLegacyConfig(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(strconv.FormatBool(legacy), func(t *testing.T) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.3 — Unreleased
+
+### Changed
+
+- Improved diagnostics for invalid configuration and settings from newer versions. (PHR-146)
+
 ## v0.3.2 — 2026-11-07
 
 ### Changed
