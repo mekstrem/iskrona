@@ -1,10 +1,14 @@
 # Changelog
 
-## v0.3.3 — Unreleased
+## v0.4.0 — 2026-11-08
+
+### Added
+
+- First-run fee setup in interactive Market Relay offers EVE SSO, manual percentages, or estimates, with a final fee review. Estimates remain labelled on the dashboard; existing and migrated configurations are not prompted. (#36)
 
 ### Changed
 
-- Improved diagnostics for invalid configuration and settings from newer versions. (PHR-146)
+- Configuration decode errors identify the file and suggest `iskrona doctor`; unknown settings receive guidance about typos, newer versions, and backing up before manual edits. (#35)
 
 ## v0.3.2 — 2026-11-07
 
