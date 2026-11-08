@@ -25,6 +25,7 @@ type MarketConfig struct {
 	MaxJumps   int    `toml:"max_jumps"`
 }
 type FeeConfig struct {
+	Setup       string  `toml:"setup,omitempty"`
 	BuyLocation string  `toml:"buy_location"`
 	BuyBroker   float64 `toml:"buy_broker"`
 	Broker      float64 `toml:"broker"`
@@ -146,6 +147,8 @@ func loadConfig(path string) (Config, bool, error) {
 		return Config{}, false, fmt.Errorf("read config %s: %w", path, e)
 	}
 	c := DefaultConfig()
+	// Only newly created configs need setup; old and migrated settings are kept.
+	c.Fees.Setup = "pending"
 	if p, se := DefaultMarketlogsPath(); se == nil {
 		if i, ee := os.Stat(p); ee == nil && i.IsDir() {
 			c.Market.Marketlogs = p
@@ -296,6 +299,9 @@ func ResolveConfig(path string, o CLIOverrides) (Config, error) {
 	return c, nil
 }
 func (c Config) Validate(required bool) error {
+	if !slices.Contains([]string{"", "pending", "estimates", "manual", "eve"}, c.Fees.Setup) {
+		return errors.New("fees.setup must be pending, estimates, manual or eve")
+	}
 	if c.Fees.BuyLocation != "" && c.Fees.BuyLocation != "structure" && c.Fees.BuyLocation != "npc" {
 		return errors.New("fees.buy_location must be structure or npc")
 	}

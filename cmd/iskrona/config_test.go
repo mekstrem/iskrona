@@ -213,6 +213,7 @@ func TestLoadConfigCreatesDefaultsForMissingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := DefaultConfig()
+	want.Fees.Setup = "pending"
 	if got.Fees != want.Fees || got.Display != want.Display || got.Market.MaxJumps != want.Market.MaxJumps {
 		t.Fatalf("LoadConfig = %#v, want default settings %#v", got, want)
 	}

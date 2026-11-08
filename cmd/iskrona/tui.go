@@ -579,6 +579,9 @@ func (m marketRelayModel) View() string {
 	contentWidth := min(width-4, 112)
 	inset := (width - contentWidth) / 2
 	header := styles.title.Render("ISKrona / MARKET RELAY")
+	if m.config.Fees.Setup == "estimates" {
+		header += styles.heading.Render(" · INCLUDES ESTIMATED FEES")
+	}
 	filter := styles.muted.Render(fmt.Sprintf("FILTER ≤ %d jumps", m.config.Market.MaxJumps))
 	header += strings.Repeat(" ", max(2, contentWidth-lipgloss.Width(header)-lipgloss.Width(filter))) + filter
 	var lines []string
