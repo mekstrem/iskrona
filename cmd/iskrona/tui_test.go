@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -20,7 +22,7 @@ func relayTestConfig() Config {
 	return Config{
 		Market:  MarketConfig{Marketlogs: "C:\\EVE\\Marketlogs", MaxJumps: 0},
 		Fees:    FeeConfig{Broker: 0.02, SalesTax: 0.01},
-		Display: DisplayConfig{CopyMode: "sell", Color: false},
+		Display: DisplayConfig{CopyMode: "sell", CopyPrice: "best", Color: false},
 	}
 }
 
@@ -45,6 +47,9 @@ func TestMarketRelayRendersSnapshotWithoutColor(t *testing.T) {
 	}
 	if strings.Contains(view, "\x1b[") {
 		t.Fatalf("--no-color view includes ANSI escape codes: %q", view)
+	}
+	if strings.Contains(view, "5% DEPTH") {
+		t.Fatalf("view without depth includes a depth section:\n%s", view)
 	}
 }
 
@@ -126,6 +131,9 @@ func TestMarketRelayHelpGroupsFitTerminal(t *testing.T) {
 		m.width, m.height = size[0], size[1]
 		m, _ = relayKey(m, "?")
 		view := m.View()
+		if !strings.Contains(view, "Y/B Copy 5% sell/buy price") {
+			t.Fatalf("depth shortcuts missing at %v:\n%s", size, view)
+		}
 		for _, row := range rows {
 			found := false
 			for _, line := range strings.Split(view, "\n") {
@@ -146,6 +154,9 @@ func TestMarketRelayHelpGroupsFitTerminal(t *testing.T) {
 		}
 		if lipgloss.Width(view) > size[0] || lipgloss.Height(view) > size[1] {
 			t.Fatalf("help overflows %v:\n%s", size, view)
+		}
+		if size[0] == 80 {
+			t.Logf("80x18 help actual View():\n%s", view)
 		}
 	}
 }
@@ -248,11 +259,11 @@ func TestMarketRelayJumpChangeCopiesChangedRecommendation(t *testing.T) {
 		{PriceCents: 50, Jumps: 1}, {PriceCents: 150, Bid: true, Jumps: 1},
 	}
 	for _, tc := range []struct {
-		name, mode string
-		clipboard  bool
-		orders     []Order
-		fail       bool
-		want       int64
+		name, mode, price string
+		clipboard         bool
+		orders            []Order
+		fail              bool
+		want              int64
 	}{
 		{name: "sell", mode: "sell", clipboard: true, orders: orders, want: 49},
 		{name: "buy", mode: "buy", clipboard: true, orders: orders, want: 151},
@@ -261,10 +272,16 @@ func TestMarketRelayJumpChangeCopiesChangedRecommendation(t *testing.T) {
 		{name: "unavailable", mode: "buy", clipboard: true, orders: []Order{{PriceCents: 50, Jumps: 1}}},
 		{name: "becomes available", mode: "buy", clipboard: true, orders: []Order{{PriceCents: 150, Bid: true, Jumps: 1}}, want: 151},
 		{name: "clipboard failure", mode: "sell", clipboard: true, orders: orders, fail: true, want: 49},
+		{name: "depth changes but best does not", mode: "sell", price: "depth", clipboard: true, want: 389, orders: []Order{
+			{PriceCents: 200, Volume: 1}, {PriceCents: 300, Volume: 99}, {PriceCents: 400, Volume: 19_900, Jumps: 1},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := relayTestConfig()
 			c.Display.CopyMode = tc.mode
+			if tc.price != "" {
+				c.Display.CopyPrice = tc.price
+			}
 			m := newMarketRelayModel(c, tc.clipboard, make(chan tea.Msg))
 			m.orders = tc.orders
 			m.snapshot = marketRelaySnapshotForOrders("Tritanium", m.orders, c)
@@ -301,7 +318,7 @@ func TestMarketRelayPersistsOnlyMaxJumpsWithPathOverride(t *testing.T) {
 	persisted := Config{
 		Market:  MarketConfig{Marketlogs: persistedMarketlogs, MaxJumps: 0},
 		Fees:    FeeConfig{Broker: 0.025, SalesTax: 0.011},
-		Display: DisplayConfig{CopyMode: "buy", Color: false},
+		Display: DisplayConfig{CopyMode: "buy", CopyPrice: "best", Color: false},
 		EVE:     EVEConfig{CharacterID: 42, CharacterName: "Capsuleer", StationID: 60003760, StationName: "Jita IV - Moon 4"},
 	}
 	if err := SaveConfig(path, persisted); err != nil {
@@ -411,6 +428,9 @@ func TestMarketRelayFileHandlerReportsParseFailureWithoutPublication(t *testing.
 func TestMarketRelayFileProcessorRetriesChangedGeneration(t *testing.T) {
 	for _, scenario := range []string{"before read", "during read", "replacement"} {
 		t.Run(scenario, func(t *testing.T) {
+			if scenario == "replacement" && runtime.GOOS == "windows" {
+				t.Skip("os.Open on Windows does not allow renaming the file while it is open")
+			}
 			dir := t.TempDir()
 			path := filepath.Join(dir, "export.txt")
 			original := []byte("price,bid,jumps,\n100.00,False,0,\n")
@@ -508,6 +528,117 @@ func TestMarketRelayAutoCopyFailureKeepsRecommendation(t *testing.T) {
 	got := updated.(marketRelayModel)
 	if got.snapshot == nil || got.snapshot.sellCents != 19990 || attempted != got.snapshot.sellCents || !got.isError || got.status != "Clipboard unavailable; market analysis is still ready" {
 		t.Fatalf("snapshot = %#v, attempted = %d, status = %q, isError = %t", got.snapshot, attempted, got.status, got.isError)
+	}
+}
+
+func TestMarketRelayDepthCopy(t *testing.T) {
+	orders := []Order{
+		{PriceCents: 400, Volume: 1}, {PriceCents: 500, Volume: 19_999},
+		{PriceCents: 200, Volume: 1, Bid: true}, {PriceCents: 100, Volume: 19_999, Bid: true},
+	}
+	for _, tc := range []struct {
+		price, kind, label string
+		want               int64
+	}{
+		{"best", "best", "Sell price", 399},
+		{"depth", "5% depth", "5% sell price", 499},
+	} {
+		t.Run(tc.price, func(t *testing.T) {
+			c := relayTestConfig()
+			c.Display.CopyPrice = tc.price
+			m := newMarketRelayModel(c, true, make(chan tea.Msg))
+			m.width, m.height = 100, 22
+			var copied int64
+			m.copyPrice = func(value int64) error { copied = value; return nil }
+			status := "Auto-copy: SELL (" + tc.kind + ") · clipboard available"
+			if got := m.autoCopyStatus(); got != status {
+				t.Fatalf("auto-copy status = %q, want %q", got, status)
+			}
+			event := marketRelayEvent{snapshot: marketRelaySnapshotForOrders("Tritanium", orders, c), orders: orders, autoCopy: true}
+			updated, _ := m.Update(event)
+			m = updated.(marketRelayModel)
+			if copied != tc.want || m.status != tc.label+" copied automatically" {
+				t.Fatalf("auto-copy = %d, %q; want %d with label %q", copied, m.status, tc.want, tc.label)
+			}
+			profitRows := strings.Split(m.profitTable(newMarketRelayStyles(false, "default")), "\n")
+			if view := m.View(); !strings.Contains(view, profitRows[len(profitRows)-1]) {
+				t.Fatalf("depth section pushed the last profit example out of view:\n%s", view)
+			}
+			for _, key := range []struct {
+				key, label string
+				want       int64
+			}{
+				{"y", "Sell price", 399}, {"b", "Buy price", 201},
+				{"Y", "5% sell price", 499}, {"B", "5% buy price", 101},
+				{"c", tc.label, tc.want},
+			} {
+				copied = 0
+				m, _ = relayKey(m, key.key)
+				if copied != key.want || m.status != key.label+" copied" {
+					t.Errorf("key %q copied %d, %q; want %d with label %q", key.key, copied, m.status, key.want, key.label)
+				}
+			}
+			m.snapshot = marketRelaySnapshotForOrders("Tritanium", orders[:2], c)
+			copied = 0
+			m, _ = relayKey(m, "B")
+			if copied != 0 || m.status != "No 5% buy price recommendation is available" {
+				t.Errorf("unavailable depth copied %d, status %q", copied, m.status)
+			}
+		})
+	}
+}
+
+func TestMarketRelayDepthLayout(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		width, height, column int
+		hasSell, hasBuy       bool
+		sellVolume, buyVolume int64
+		sell, buy             string
+	}{
+		{"roomy", 100, 24, 32, true, true, 240, 500, "6 249 000.00 ISK · 240 units", "5 400 000.00 ISK · 500 units"},
+		{"roomy clipped", 100, 24, 32, true, true, 1_234_567_890, 1_234_567_890, "6 249 000.00 ISK · 1 234 567 …", "5 400 000.00 ISK · 1 234 567 …"},
+		{"sell only", 100, 24, 32, true, false, 240, 0, "6 249 000.00 ISK · 240 units", "unavailable"},
+		{"buy without volume", 100, 24, 32, true, true, 240, 0, "6 249 000.00 ISK · 240 units", "unavailable"},
+		{"compact", 80, 18, 38, true, true, 240, 500, "6 249 000.00 ISK · 240 units", "5 400 000.00 ISK · 500 units"},
+		{"compact clipped", 80, 18, 38, true, true, 1_234_567_890, 500, "6 249 000.00 ISK · 1 234 567 890 un…", "5 400 000.00 ISK · 500 units"},
+		{"buy only", 80, 18, 38, false, true, 0, 500, "unavailable", "5 400 000.00 ISK · 500 units"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := relayTestConfig()
+			c.Fees.BuyBroker, c.Fees.BuyLocation = .005, "structure"
+			m := newMarketRelayModel(c, true, make(chan tea.Msg))
+			m.width, m.height = tc.width, tc.height
+			var orders []Order
+			if tc.hasSell {
+				orders = append(orders, Order{PriceCents: 624_900_000, Volume: 1}, Order{PriceCents: 625_000_000, Volume: tc.sellVolume - 1})
+			}
+			if tc.hasBuy {
+				orders = append(orders, Order{PriceCents: 540_000_000, Volume: min(1, tc.buyVolume), Bid: true},
+					Order{PriceCents: 539_900_000, Volume: max(0, tc.buyVolume-1), Bid: true})
+			}
+			m.snapshot = marketRelaySnapshotForOrders("Querious-Covert Ops Cloaking Device II-2026.11.26 145245", orders, c)
+			view := m.View()
+			buyLabel, buyValue := "5% DEPTH  [B]", tc.buy
+			if tc.sellVolume > 0 && tc.buyVolume > 0 {
+				if tc.width == 100 {
+					buyLabel = fmt.Sprintf("%-*s5%% MARGIN", tc.column, buyLabel)
+					buyValue = fmt.Sprintf("%-*s10.47%%", tc.column, buyValue)
+				} else {
+					buyValue += "\n  5% MARGIN  10.47%"
+				}
+			} else if strings.Contains(view, "5% MARGIN") || m.snapshot.depthMargin != 0 {
+				t.Fatalf("depth margin with an unavailable side:\n%s", view)
+			}
+			want := fmt.Sprintf("\n  \n  %-*s%s\n  %-*s%s\n", tc.column, "5% DEPTH  [Y]", buyLabel, tc.column, tc.sell, buyValue)
+			if !strings.Contains(view, want) || !strings.Contains(view, "Y/B 5%") {
+				t.Fatalf("depth block or shortcut missing; want block %q:\n%s", want, view)
+			}
+			if lipgloss.Width(view) > tc.width || lipgloss.Height(view) > tc.height {
+				t.Fatalf("depth view overflows %dx%d:\n%s", tc.width, tc.height, view)
+			}
+			t.Logf("%dx%d actual View():\n%s", tc.width, tc.height, view)
+		})
 	}
 }
 
@@ -618,7 +749,7 @@ func TestMarketRelayPaletteActions(t *testing.T) {
 		}
 		switch index {
 		case 0, 1, 2:
-			want, _ := m.snapshot.copyValue([]string{"sell", "buy", "sell"}[index])
+			want, _ := m.snapshot.copyValue([]string{"sell", "buy", "sell"}[index], "best")
 			if copied != want || m.toast == "" || cmd == nil {
 				t.Fatalf("copy action: %d %q", copied, m.toast)
 			}
