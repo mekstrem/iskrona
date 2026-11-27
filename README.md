@@ -4,7 +4,9 @@ ISKrona is a focused Go market assistant for EVE Online. It watches exported mar
 
 ## Install
 
-Download the archive for your operating system and CPU from [Releases](../../releases), extract it, and place the `iskrona` executable somewhere on your `PATH`.
+Download the [latest stable release](https://github.com/mekstrem/iskrona/releases/latest) for your operating system and CPU, extract it, and place the `iskrona` executable somewhere on your `PATH`.
+
+The `master` branch may contain unreleased changes. To build a stable version from source, check out its release tag before building.
 
 Alternatively, build from source with Go 1.26 or later:
 
