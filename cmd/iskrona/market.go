@@ -1,12 +1,14 @@
 package main
 
 import (
+	"cmp"
 	"encoding/csv"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -18,15 +20,22 @@ type Order struct {
 	PriceCents int64
 	Bid        bool
 	Jumps      int
+	Volume     int64 // Remaining units; zero when the export has no volume column.
 }
 
 // MarketSummary contains the best eligible orders and the prices to copy for
 // each side. A nil order means that side had no eligible orders.
 type MarketSummary struct {
-	BestBuy   *Order
-	BestSell  *Order
-	BuyCents  int64
-	SellCents int64
+	BestBuy         *Order
+	BestSell        *Order
+	BuyCents        int64
+	SellCents       int64
+	BuyDepthCents   int64
+	SellDepthCents  int64
+	BuyDepthVolume  int64
+	SellDepthVolume int64
+	HasBuyDepth     bool
+	HasSellDepth    bool
 }
 
 // ParseMarketCSV parses an EVE market export. Columns are located by header
@@ -48,6 +57,7 @@ func ParseMarketCSV(r io.Reader) ([]Order, error) {
 	if !pok || !bok || !jok {
 		return nil, errors.New("market export must contain price, bid, and jumps columns")
 	}
+	volumeAt, vok := indexes["volremaining"]
 	maxAt := priceAt
 	if bidAt > maxAt {
 		maxAt = bidAt
@@ -79,9 +89,28 @@ func ParseMarketCSV(r io.Reader) ([]Order, error) {
 		if err != nil || jumps < 0 {
 			return nil, fmt.Errorf("row %d jumps is not a nonnegative integer", row)
 		}
-		orders = append(orders, Order{PriceCents: price, Bid: bid, Jumps: jumps})
+		var volume int64
+		if vok {
+			if len(rec) <= volumeAt {
+				return nil, fmt.Errorf("market export row %d is missing volRemaining", row)
+			}
+			volume, err = parseUnits(rec[volumeAt])
+			if err != nil {
+				return nil, fmt.Errorf("row %d volRemaining: %w", row, err)
+			}
+		}
+		orders = append(orders, Order{PriceCents: price, Bid: bid, Jumps: jumps, Volume: volume})
 	}
 	return orders, nil
+}
+
+func parseUnits(s string) (int64, error) {
+	whole, frac, decimal := strings.Cut(strings.TrimSpace(s), ".")
+	units, err := strconv.ParseInt(whole, 10, 64)
+	if err != nil || strings.HasPrefix(whole, "-") || decimal && (frac == "" || strings.Trim(frac, "0") != "") {
+		return 0, fmt.Errorf("volume must be a nonnegative whole number (got %q)", s)
+	}
+	return units, nil
 }
 
 func parseBool(s string) (bool, error) {
@@ -142,7 +171,69 @@ func parseCents(s string) (int64, error) {
 	return price, nil
 }
 
-// AnalyzeMarket selects the highest eligible buy and lowest eligible sell.
+// DepthPrice returns the weighted price of the best 5% and the full filtered volume.
+// Orders below 10% of the best buy or above 10 times the best sell are ignored
+// so one lowball or scam order cannot dominate the average.
+func DepthPrice(orders []Order, maxJumps int, bid bool) (cents, volume int64, ok bool) {
+	var eligible []Order
+	var best int64
+	for _, o := range orders {
+		if o.Bid != bid || o.Jumps > maxJumps || o.Volume <= 0 {
+			continue
+		}
+		eligible = append(eligible, o)
+		if bid {
+			best = max(best, o.PriceCents)
+		} else if best == 0 || o.PriceCents < best {
+			best = o.PriceCents
+		}
+	}
+	keep := eligible[:0]
+	for _, o := range eligible {
+		if bid {
+			if o.PriceCents < best/10 {
+				continue
+			}
+		} else if best <= math.MaxInt64/10 && o.PriceCents > best*10 {
+			continue
+		}
+		keep = append(keep, o)
+		if volume > math.MaxInt64-o.Volume {
+			return 0, 0, false
+		}
+		volume += o.Volume
+	}
+	if volume == 0 {
+		return 0, 0, false
+	}
+	target := volume / 20
+	if volume%20 != 0 {
+		target++
+	}
+	slices.SortFunc(keep, func(a, b Order) int {
+		if bid {
+			return cmp.Compare(b.PriceCents, a.PriceCents)
+		}
+		return cmp.Compare(a.PriceCents, b.PriceCents)
+	})
+	var units int64
+	var cost float64
+	for _, o := range keep {
+		take := min(o.Volume, target-units)
+		cost += float64(o.PriceCents) * float64(take)
+		units += take
+		if units == target {
+			break
+		}
+	}
+	average := math.Round(cost / float64(units))
+	if average >= float64(math.MaxInt64) {
+		return math.MaxInt64, volume, true
+	}
+	return max(1, int64(average)), volume, true
+}
+
+// AnalyzeMarket selects the best eligible orders and calculates depth prices.
 // The jump limit is inclusive.
 func AnalyzeMarket(orders []Order, maxJumps int) MarketSummary {
 	var out MarketSummary
@@ -166,6 +257,14 @@ func AnalyzeMarket(orders []Order, maxJumps int) MarketSummary {
 	}
 	if out.BestSell != nil {
 		out.SellCents = LowerTick(out.BestSell.PriceCents)
+	}
+	if cents, volume, ok := DepthPrice(orders, maxJumps, true); ok {
+		out.BuyDepthCents, out.BuyDepthVolume = RaiseTick(cents), volume
+		out.HasBuyDepth = out.BuyDepthCents != 0
+	}
+	if cents, volume, ok := DepthPrice(orders, maxJumps, false); ok {
+		out.SellDepthCents, out.SellDepthVolume = LowerTick(cents), volume
+		out.HasSellDepth = out.SellDepthCents != 0
 	}
 	return out
 }

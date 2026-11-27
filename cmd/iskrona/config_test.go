@@ -125,7 +125,7 @@ func TestSaveAndLoadConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "nested", "config.toml")
-	want := Config{Market: MarketConfig{Marketlogs: marketlogs, MaxJumps: 7}, Fees: FeeConfig{BuyBroker: 0.012, Broker: 0.025, SalesTax: 0.011}, Display: DisplayConfig{CopyMode: "sell", Color: true}}
+	want := Config{Market: MarketConfig{Marketlogs: marketlogs, MaxJumps: 7}, Fees: FeeConfig{BuyBroker: 0.012, Broker: 0.025, SalesTax: 0.011}, Display: DisplayConfig{CopyMode: "sell", CopyPrice: "depth", Color: true}}
 	if err := SaveConfig(path, want); err != nil {
 		t.Fatal(err)
 	}
@@ -135,6 +135,24 @@ func TestSaveAndLoadConfig(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("loaded config = %#v, want %#v", got, want)
+	}
+}
+
+func TestConfigCopyPriceValidation(t *testing.T) {
+	c, _, err := decodeConfig([]byte("[display]\ncopy_mode = \"buy\"\n"))
+	if err != nil || c.Display.CopyPrice != "best" {
+		t.Fatalf("config missing copy_price resolved to %q, %v", c.Display.CopyPrice, err)
+	}
+	for _, price := range []string{"best", "depth", "", "average"} {
+		c.Display.CopyPrice = price
+		err := c.Validate(false)
+		if price == "best" || price == "depth" {
+			if err != nil {
+				t.Errorf("copy_price %q rejected: %v", price, err)
+			}
+		} else if err == nil || err.Error() != "display.copy_price must be best or depth" {
+			t.Errorf("copy_price %q validation = %v", price, err)
+		}
 	}
 }
 
@@ -172,7 +190,7 @@ func TestSaveMaxJumpsPreservesOtherConfig(t *testing.T) {
 	want := Config{
 		Market:  MarketConfig{Marketlogs: marketlogs, MaxJumps: 9},
 		Fees:    FeeConfig{Broker: 0.025, SalesTax: 0.011},
-		Display: DisplayConfig{CopyMode: "buy", Color: false, Theme: "gallente"},
+		Display: DisplayConfig{CopyMode: "buy", CopyPrice: "depth", Color: false, Theme: "gallente"},
 		EVE:     EVEConfig{CharacterID: 42, CharacterName: "Capsuleer", StationID: 60003760, StationName: "Jita IV - Moon 4"},
 	}
 	initial := want
@@ -282,7 +300,7 @@ func TestLoadConfigMigratesLegacyFlatFile(t *testing.T) {
 func TestResolveConfigAppliesExplicitZeroJumpOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	if err := SaveConfig(path, Config{Market: MarketConfig{Marketlogs: dir, MaxJumps: 12}, Fees: FeeConfig{Broker: 0.02, SalesTax: 0.01}, Display: DisplayConfig{CopyMode: "sell", Color: true}}); err != nil {
+	if err := SaveConfig(path, Config{Market: MarketConfig{Marketlogs: dir, MaxJumps: 12}, Fees: FeeConfig{Broker: 0.02, SalesTax: 0.01}, Display: DisplayConfig{CopyMode: "sell", CopyPrice: "best", Color: true}}); err != nil {
 		t.Fatal(err)
 	}
 	jumps := 0
@@ -298,7 +316,7 @@ func TestResolveConfigAppliesExplicitZeroJumpOverride(t *testing.T) {
 func TestResolveConfigPathOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
-	if err := SaveConfig(path, Config{Market: MarketConfig{Marketlogs: dir}, Fees: FeeConfig{Broker: 0.02, SalesTax: 0.01}, Display: DisplayConfig{CopyMode: "sell", Color: true}}); err != nil {
+	if err := SaveConfig(path, Config{Market: MarketConfig{Marketlogs: dir}, Fees: FeeConfig{Broker: 0.02, SalesTax: 0.01}, Display: DisplayConfig{CopyMode: "sell", CopyPrice: "best", Color: true}}); err != nil {
 		t.Fatal(err)
 	}
 	other := filepath.Join(dir, "other")

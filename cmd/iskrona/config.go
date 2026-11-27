@@ -33,9 +33,10 @@ type FeeConfig struct {
 	SalesTax    float64 `toml:"sales_tax"`
 }
 type DisplayConfig struct {
-	CopyMode string `toml:"copy_mode"`
-	Color    bool   `toml:"color"`
-	Theme    string `toml:"theme"`
+	CopyMode  string `toml:"copy_mode"`
+	CopyPrice string `toml:"copy_price"`
+	Color     bool   `toml:"color"`
+	Theme     string `toml:"theme"`
 }
 
 var marketRelayThemes = []string{"default", "caldari", "gallente", "minmatar", "amarr"}
@@ -65,7 +66,7 @@ type CLIOverrides struct {
 }
 
 func DefaultConfig() Config {
-	return Config{Fees: FeeConfig{BuyLocation: "structure", BuyBroker: .005, Broker: .02, SalesTax: .01}, Display: DisplayConfig{CopyMode: "sell", Color: true, Theme: "default"}}
+	return Config{Fees: FeeConfig{BuyLocation: "structure", BuyBroker: .005, Broker: .02, SalesTax: .01}, Display: DisplayConfig{CopyMode: "sell", CopyPrice: "best", Color: true, Theme: "default"}}
 }
 func ConfigPath() (string, error) {
 	d, e := os.UserConfigDir()
@@ -323,6 +324,9 @@ func (c Config) Validate(required bool) error {
 	}
 	if c.Display.CopyMode != "buy" && c.Display.CopyMode != "sell" {
 		return fmt.Errorf("display.copy_mode must be buy or sell")
+	}
+	if c.Display.CopyPrice != "best" && c.Display.CopyPrice != "depth" {
+		return errors.New("display.copy_price must be best or depth")
 	}
 	if c.Display.Theme != "" && !slices.Contains(marketRelayThemes, c.Display.Theme) {
 		return fmt.Errorf("display.theme must be default, caldari, gallente, minmatar or amarr")

@@ -63,11 +63,23 @@ When an update is available, the dashboard shows its version and https://github.
 
 ![Market Relay dashboard showing buy and sell prices, net margin, and profit examples.](screenshots/market-relay.png)
 
-Market Relay summarizes the latest export, including profit after broker fees and tax.
+Market Relay summarizes the latest export, including profit after broker fees and tax. Exports without `volRemaining` still show best prices but omit the 5% depth row.
 
 ![Trade cost details showing purchase cost, broker fees, sales tax, and net profit.](screenshots/trade-cost-details.png)
 
 Press `i` to inspect the trade cost breakdown and see how fees affect the result.
+
+### 5% depth and margin
+
+The **5% DEPTH** row prices the part of the book you could realistically trade, not just the single best order.
+
+- The **price** is the unit-weighted average of the best 5% of that side's volume: highest buy orders first, lowest sell orders first, taking part of the last order when the cutoff falls inside it.
+- The **volume** is that side's total remaining units after filtering, not the size of the 5% slice.
+- Orders below 10% of the best buy, or above 10 times the best sell, are ignored. Without that rule a single 10,000,000-unit buy order at 0.01 ISK can dominate the average.
+- The price is rounded to a valid EVE tick so it can be copied directly. `Y` copies the 5% sell price and `B` the 5% buy price; `display.copy_price = "depth"` makes `c` and automatic copy use them instead of the best prices.
+- **5% MARGIN** applies the same broker fees and sales tax as **NET MARGIN** to the two depth prices.
+
+All figures come from your export, so they cover the orders inside the jump limit rather than the whole region. Sites such as EVE Tycoon use the same 5% rule but report whole-region numbers, and their raw average is not rounded to a tick.
 
 ## Commands
 
@@ -121,6 +133,7 @@ sales_tax = 0.01
 
 [display]
 copy_mode = "sell"
+copy_price = "best"
 color = true
 theme = "default"
 ```
@@ -143,7 +156,7 @@ ISKrona requests your character's skills and standings, and uses Accounting, Bro
 
 ## Clipboard and troubleshooting
 
-ISKrona automatically copies the selected recommendation when it processes an export, defaulting to sell. Set `display.copy_mode` or use `--copy buy` or `--copy sell` to choose the recommendation. If clipboard initialization is unavailable, analysis continues and Market Relay shows auto-copy as disabled. Clipboard writes are best-effort because the underlying clipboard API does not report runtime write failures.
+ISKrona automatically copies the best sell recommendation by default. Set `display.copy_mode` or use `--copy buy` or `--copy sell` to choose the side. Set `display.copy_price = "depth"` to use the 5% depth price instead, when available. Press `c` to copy the configured recommendation, `y` or `b` for the best sell or buy price, or `Y` or `B` for the 5% sell or buy price. If clipboard initialization is unavailable, analysis continues and Market Relay shows auto-copy as disabled. Clipboard writes are best-effort because the underlying clipboard API does not report runtime write failures.
 
 - **`market.marketlogs is empty`**: set the Marketlogs path in the configuration file, or use `iskrona tui --path DIR`. Run `iskrona doctor` to check local settings without changing them.
 - **No output for an export**: start `tui` before creating or changing the `.txt` export; unchanged files already in the directory at startup are ignored.
