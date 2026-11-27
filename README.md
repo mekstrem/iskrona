@@ -1,37 +1,33 @@
 # ISKrona
 
-ISKrona is a focused Go market assistant for EVE Online. It watches exported market data, turns the current order book into practical buy and sell recommendations, estimates margin, and can copy a recommendation to the clipboard.
+ISKrona is a market assistant for EVE Online. It watches your market exports, recommends buy and sell prices, estimates profit after fees and tax, and can copy prices to the clipboard.
 
 ## Install
 
-Download the [latest stable release](https://github.com/mekstrem/iskrona/releases/latest) for your operating system and CPU, extract it, and place the `iskrona` executable somewhere on your `PATH`.
+Download the [latest stable release](https://github.com/mekstrem/iskrona/releases/latest) for your operating system and CPU, extract it, and place the `iskrona` executable somewhere on your `PATH`. Releases are available for Windows, macOS, and Linux on amd64 and arm64.
 
 The `master` branch may contain unreleased changes. To build a stable version from source, check out its release tag before building.
 
-Alternatively, build from source with Go 1.26 or later:
+<details>
+<summary>Install or uninstall with an AI agent</summary>
+
+To install, give your agent this prompt:
 
 ```text
-git clone https://github.com/mekstrem/iskrona.git
-cd iskrona
-go build ./cmd/iskrona
+Install ISKrona from https://github.com/mekstrem/iskrona/releases/latest.
+Download the archive for my operating system and CPU. Verify its SHA-256
+against checksums.txt from the same release before extracting it. If no
+matching archive is available, build from that release tag with Go 1.26
+or later.
+
+Install the executable in a user-writable directory on my PATH. Ask before
+making privileged changes. Confirm that `iskrona` resolves to the installed
+executable, then run `iskrona version`. For a prebuilt release, confirm the
+version matches the release tag. For a source build, report the tag used
+and the command's output; a plain source build may report `dev`.
 ```
 
-Alternatively, run `./build.sh` from the repository to build locally.
-
-Prebuilt releases are available for Windows, macOS, and Linux on amd64 and arm64.
-
-### AI installation
-
-Give this prompt to your AI agent:
-
-```text
-Install ISKrona locally from https://github.com/mekstrem/iskrona.
-Use the latest release for my operating system and CPU, or build from source
-with Go 1.26 or later if needed. Put the executable on my PATH and verify the
-installation with `iskrona version`. Ask before making privileged changes.
-```
-
-To uninstall, give your AI agent this prompt:
+To uninstall:
 
 ```text
 Uninstall ISKrona from my computer. Find and remove its executable and any
@@ -40,155 +36,31 @@ removing my configuration or other user data. Verify the executable is no
 longer available on my PATH.
 ```
 
-## Quick start
-
-1. Start watching for exports (normal startup automatically creates missing configuration):
-
-```text
-iskrona
-```
-
-2. If the folder was not detected, set `market.marketlogs` in the configuration file, or use `iskrona --path DIR` and start again. Automatic detection checks only `Documents/EVE/logs/Marketlogs` under your home directory, not every possible EVE installation or redirected Documents folder.
-3. Once Market Relay is running, open a market item in EVE Online and use the market-export action to create a `.txt` export in the EVE `Marketlogs` folder.
-
-Bare `iskrona` opens Market Relay; `iskrona tui` is the optional explicit equivalent, with the same flags. It baselines existing files at startup and updates for new or changed `.txt` exports once stable. Press `Ctrl+C` to stop it.
-
-### Update checks
-
-Release builds of Market Relay (`iskrona`, `tui`, or the deprecated `watch` alias) check GitHub's releases API for a newer stable version in the background at startup. Source builds report version `dev` and do not check for updates unless built with a release version. The request has a short timeout; offline or failed checks are silently ignored and never delay the dashboard. No market exports or EVE credentials are sent. Other commands do not check for updates.
-
-When an update is available, the dashboard shows its version and https://github.com/mekstrem/iskrona/releases. Updates are never downloaded or installed automatically; use that page to update manually.
-
-## Screenshots
+</details>
 
 ![Market Relay dashboard showing buy and sell prices, net margin, and profit examples.](screenshots/market-relay.png)
 
-Market Relay summarizes the latest export, including profit after broker fees and tax. Exports without `volRemaining` still show best prices but omit the 5% depth row.
+## Quick start
 
-![Trade cost details showing purchase cost, broker fees, sales tax, and net profit.](screenshots/trade-cost-details.png)
+1. Run `iskrona` in a terminal to open the Market Relay dashboard.
+2. If Market Relay can't find your EVE `Marketlogs` folder, restart it with `iskrona --path "DIR"`, replacing `DIR` with the path to that folder.
+3. With Market Relay running, open an item in the EVE market and use the market-export action to save a `.txt` export. The dashboard updates when the export is ready.
 
-Press `i` to inspect the trade cost breakdown and see how fees affect the result.
+**[Read the user guide](docs/user-guide.md)** for configuration, EVE login and fees, clipboard settings, and troubleshooting.
 
-### 5% depth and margin
-
-The **5% DEPTH** row prices the part of the book you could realistically trade, not just the single best order.
-
-- The **price** is the unit-weighted average of the best 5% of that side's volume: highest buy orders first, lowest sell orders first, taking part of the last order when the cutoff falls inside it.
-- The **volume** is that side's total remaining units after filtering, not the size of the 5% slice.
-- Orders below 10% of the best buy, or above 10 times the best sell, are ignored. Without that rule a single 10,000,000-unit buy order at 0.01 ISK can dominate the average.
-- The price is rounded to a valid EVE tick so it can be copied directly. `Y` copies the 5% sell price and `B` the 5% buy price; `display.copy_price = "depth"` makes `c` and automatic copy use them instead of the best prices.
-- **5% MARGIN** applies the same broker fees and sales tax as **NET MARGIN** to the two depth prices.
-
-All figures come from your export, so they cover the orders inside the jump limit rather than the whole region. Sites such as EVE Tycoon use the same 5% rule but report whole-region numbers, and their raw average is not rounded to a tick.
-
-## Commands
-
-```text
-iskrona [--path DIR] [--jumps N] [--copy buy|sell] [--no-color]
-iskrona doctor
-iskrona login [--station NAME_OR_ID]
-iskrona logout
-iskrona tui [--path DIR] [--jumps N] [--copy buy|sell] [--no-color]
-iskrona version
-```
-
-- `doctor` checks local configuration, the market folder, the newest `.txt` export, and optional clipboard availability without starting the watcher.
-- `login` reuses saved authorization when possible, otherwise opens EVE SSO, and populates the broker fee and sales tax from the selected character. It models Jita 4-4 by default; use `--station` for another NPC station.
-- `logout` removes the EVE authorization from the operating system credential store.
-- `tui` opens the interactive Market Relay dashboard and monitors a Marketlogs directory for buy, sell, margin, and profit recommendations. It requires an interactive terminal.
-- `watch` remains available as a deprecated compatibility alias for `tui`.
-- Run `iskrona --help` or `iskrona COMMAND --help` for the generated command reference.
-
-ISKrona reads the `price`, `bid`, and `jumps` columns, so extra columns and column ordering in an EVE export do not matter.
-
-### Local diagnostics
-
-Run `iskrona doctor` for read-only checks: configuration location and settings validity, market-folder readability, parsing and order count of the newest `.txt` export, and optional clipboard availability. It makes no network or authentication requests and performs no repairs. It checks the newest export in the configured or detected folder, not an arbitrary file path.
-
-Results are labeled `PASS`, `WARN`, or `FAIL`:
-
-- `WARN`: missing or legacy settings, no exports, or unavailable clipboard. Missing settings use in-memory defaults and check the usual folder above; `doctor` never creates or migrates configuration.
-- `FAIL`: malformed or unreadable configuration, invalid settings or an unusable market folder, or an unreadable or malformed newest export. If an export is still being written, retry after the export finishes.
-
-Exit status is `1` if any check fails, otherwise `0` (including warnings); command misuse returns `2`.
-
-## Configuration
-
-The configuration is stored in your platform-specific user config directory as `iskrona/config.toml`:
-
-- Windows: `%AppData%\iskrona\config.toml`
-- macOS: `~/Library/Application Support/iskrona/config.toml`
-- Linux: `$XDG_CONFIG_HOME/iskrona/config.toml`, or `~/.config/iskrona/config.toml` when unset.
-
-```toml
-[market]
-marketlogs = ""
-max_jumps = 0
-
-[fees]
-buy_broker = 0.005
-buy_location = "structure"
-broker = 0.02
-sales_tax = 0.01
-
-[display]
-copy_mode = "sell"
-copy_price = "best"
-color = true
-theme = "default"
-```
-
-`max_jumps` limits the market distance considered. Fee values are decimal fractions: `0.02` means 2%. Per-run options override the corresponding saved settings.
-
-While Market Relay is running, press `+` to increase the distance or `-` to decrease it. The dashboard recalculates the current export immediately, uses the new limit for later exports, and saves the value as the next-run default.
-
-Press `F2` on the dashboard to cycle through Default → Caldari (steel blue) → Gallente (jade) → Minmatar (rust) → Amarr (gold). The theme redraws immediately and is saved for the next run; existing configurations keep the original Default colors. You can also set `display.theme` to `default`, `caldari`, `gallente`, `minmatar`, or `amarr`. Profit/loss colors remain green/red in every theme, and `--no-color` (or `color = false`) disables all colors without changing the saved theme. `?` opens shortcut help. If saving fails, the previous theme stays active and an error is shown; other saved settings and per-run overrides are left unchanged.
-
-## EVE-derived fees
-
-On the first interactive Market Relay launch, choose EVE SSO, manual fee setup, or explicitly labelled estimates. SSO lets you choose an NPC station (Jita 4-4 by default), derives NPC sell fees from skills and standings, and asks where you place buy orders. Structure buy fees must be entered manually; choose manual setup for structure sell fees. Enter percentages as shown in EVE: for example, enter `1.47` for 1.47%. Review the rates before saving. Existing and migrated configurations are not prompted, and noninteractive commands never open setup. Cancelling leaves setup pending for the next interactive launch; a successful SSO login saves its NPC fees and authorization even if you leave before finishing buy fees.
-
-The `fees.setup` value tracks this flow: `pending`, `estimates`, `manual`, or `eve`. Choosing estimates keeps an **INCLUDES ESTIMATED FEES** label in Market Relay. Standalone `iskrona login` preserves this state because it leaves buy fees unchanged: estimates stay labelled, and pending setup is still offered on the next interactive launch. After manually replacing remaining estimate rates in the file, set `setup = "manual"` to remove the label. `doctor` remains read-only and never starts setup.
-
-`iskrona login` reuses saved authorization when possible; otherwise it opens your browser for EVE SSO using the local callback `http://localhost:8765/callback`. The bundled EVE client ID is public; the app registration must retain this exact callback URL.
-
-ISKrona requests your character's skills and standings, and uses Accounting, Broker Relations, and the selected station's NPC corporation and faction standings to calculate fees. The selected station defaults to Jita IV - Moon 4 - Caldari Navy Assembly Plant. `broker` is the sell-order broker fee. `buy_location` defaults to `"structure"`; set it to `"npc"` for an NPC buy order. `buy_broker` is the total buy-order rate, defaulting to 0.5%. For structures it includes the 0.5% SCC surcharge: the structure broker component is the remaining rate, with a 100 ISK minimum per order, plus the surcharge. Rates below 0.5% remain accepted, but the full 0.5% surcharge and 100 ISK broker minimum still apply. Set the total rate to match the structure; for NPC stations enter the applicable broker percentage. Login updates `broker` and `sales_tax` from NPC data but leaves the buy settings unchanged. The margin estimates a one-unit buy order; profit examples apply the minimum once to the whole order. Rerun `iskrona login` after skills or standings change.
-
-## Clipboard and troubleshooting
-
-ISKrona automatically copies the best sell recommendation by default. Set `display.copy_mode` or use `--copy buy` or `--copy sell` to choose the side. Set `display.copy_price = "depth"` to use the 5% depth price instead, when available. Press `c` to copy the configured recommendation, `y` or `b` for the best sell or buy price, or `Y` or `B` for the 5% sell or buy price. If clipboard initialization is unavailable, analysis continues and Market Relay shows auto-copy as disabled. Clipboard writes are best-effort because the underlying clipboard API does not report runtime write failures.
-
-- **`market.marketlogs is empty`**: set the Marketlogs path in the configuration file, or use `iskrona tui --path DIR`. Run `iskrona doctor` to check local settings without changing them.
-- **No output for an export**: start `tui` before creating or changing the `.txt` export; unchanged files already in the directory at startup are ignored.
-- **Invalid export error**: verify the export has `price`, `bid`, and `jumps` columns. If it is still being written, retry `iskrona doctor` after the export finishes.
+| Shortcut | Action |
+| --- | --- |
+| `?` | Show shortcut help |
+| `i` | Inspect trade costs |
+| `c` | Copy the configured recommendation |
+| `y` / `b` | Copy the best sell / buy price |
+| `+` / `-` | Increase / decrease the jump limit |
 
 ## Contributing and support
 
-Bug reports and feature requests belong in [GitHub Issues](../../issues). Please read [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md), and the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+Report bugs or request features in [GitHub Issues](https://github.com/mekstrem/iskrona/issues). See [Contributing](CONTRIBUTING.md) for source builds and developer setup, and read the [security policy](SECURITY.md) and [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
 
-## Support development
-
-ISKrona is a community project built for EVE Online players. If you find it useful and would like to support its continued development, you can send an in-game ISK donation to the corporation **Pleiadian Trading**.
-
-Donations are entirely optional. Whether you contribute ISK, report a bug, suggest an improvement, or simply use the tool, thank you for being part of the community!
-
-CCP’s [Developer License Agreement](https://developers.eveonline.com/license-agreement) permits developers to receive in-game ISK for their applications, subject to its terms.
-
-## Development
-
-```text
-go test ./...
-go vet ./...
-go build ./cmd/iskrona
-```
-
-### Offline export simulation
-
-With Go 1.26 or later, run `go run -tags dev ./cmd/iskrona` and press `F3` on the dashboard to simulate an export without EVE running. The dev build embeds the real Odysseus export from `The Forge-Odysseus-2026.10.30 065638.txt`; `?` shows the dev-only shortcut.
-
-Each press creates a uniquely named `iskrona-dev-Odysseus-*.txt` in the active watched directory (`market.marketlogs`, or the `--path` override). Buy and sell prices vary independently by up to 5% to simulate changing margins; all other fixture columns are preserved. It waits for the startup baseline and publishes only a complete file, without overwriting existing exports. The normal watcher parses it, updates recommendations, and performs the usual auto-copy. Creation errors appear in the TUI. Simulation files remain on disk; delete only these generated files when finished. The folder must support hard links.
-
-For an isolated session, create an empty folder and use `go run -tags dev ./cmd/iskrona --path /path/to/folder`. Test both variants with `go test ./cmd/iskrona` and `go test -tags dev ./cmd/iskrona`. Normal builds and release archives omit the fixture and simulation implementation; F3 is inactive and absent from help.
+You can support development with an optional in-game ISK donation to **Pleiadian Trading**, subject to [CCP’s Developer License Agreement](https://developers.eveonline.com/license-agreement).
 
 ## License and disclaimer
 
