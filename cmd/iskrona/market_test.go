@@ -1,6 +1,8 @@
 package main
 
 import (
+	"math"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,6 +17,14 @@ func TestParseAndAnalyzeMarket(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := AnalyzeMarket(orders, 2)
+	for _, order := range orders {
+		if order.Volume != 0 {
+			t.Fatalf("order without volume column has volume %d", order.Volume)
+		}
+	}
+	if s.HasBuyDepth || s.HasSellDepth {
+		t.Fatalf("export without volume column has depth: %#v", s)
+	}
 	if s.BestBuy == nil || s.BestBuy.PriceCents != 2500 {
 		t.Fatalf("best buy: %#v", s.BestBuy)
 	}
@@ -48,6 +58,8 @@ func TestParseMarketCSVRejectsInvalidInput(t *testing.T) {
 		{"invalid bid", "price,bid,jumps\n1.00,maybe,0\n", "row 2 bid: invalid boolean"},
 		{"negative jumps", "price,bid,jumps\n1.00,True,-1\n", "row 2 jumps is not a nonnegative integer"},
 		{"invalid jumps", "price,bid,jumps\n1.00,True,nearby\n", "row 2 jumps is not a nonnegative integer"},
+		{"short volume row", "price,bid,jumps,volRemaining\n1.00,True,0\n", "row 2 is missing volRemaining"},
+		{"invalid volume", "price,bid,jumps,volRemaining\n1.00,True,0,1.5\n", "row 2 volRemaining"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -60,12 +72,12 @@ func TestParseMarketCSVRejectsInvalidInput(t *testing.T) {
 }
 
 func TestParseMarketCSVAcceptsDocumentedVariants(t *testing.T) {
-	data := " PRICE , BID , JUMPS ,extra\n1,yes,0,x\n2.5,0,1,x\n3.1200,1,2,x\n4.00,no,3,x\n"
+	data := " PRICE , VOLREMAINING , BID , JUMPS ,extra\n1,1.0,yes,0,x\n2.5,12.000,0,1,x\n3.1200,400,1,2,x\n4.00,0,no,3,x\n"
 	orders, err := ParseMarketCSV(strings.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []Order{{PriceCents: 100, Bid: true, Jumps: 0}, {PriceCents: 250, Bid: false, Jumps: 1}, {PriceCents: 312, Bid: true, Jumps: 2}, {PriceCents: 400, Bid: false, Jumps: 3}}
+	want := []Order{{PriceCents: 100, Bid: true, Volume: 1}, {PriceCents: 250, Jumps: 1, Volume: 12}, {PriceCents: 312, Bid: true, Jumps: 2, Volume: 400}, {PriceCents: 400, Jumps: 3}}
 	if len(orders) != len(want) {
 		t.Fatalf("orders = %#v, want %#v", orders, want)
 	}
@@ -73,6 +85,94 @@ func TestParseMarketCSVAcceptsDocumentedVariants(t *testing.T) {
 		if orders[i] != want[i] {
 			t.Errorf("order %d = %#v, want %#v", i, orders[i], want[i])
 		}
+	}
+}
+
+func TestParseUnits(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		want  int64
+		ok    bool
+	}{
+		{"1234", 1234, true}, {"1.0", 1, true}, {"12.000", 12, true},
+		{"1.5", 0, false}, {"-1", 0, false}, {"", 0, false}, {"abc", 0, false},
+	} {
+		got, err := parseUnits(tc.input)
+		if got != tc.want || (err == nil) != tc.ok {
+			t.Errorf("parseUnits(%q) = %d, %v; want %d, ok=%t", tc.input, got, err, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestDepthPrice(t *testing.T) {
+	// The 500-unit sample is the best 5% of each 10,000-unit side.
+	orders := []Order{
+		{PriceCents: 600, Volume: 9500}, {PriceCents: 300, Bid: true, Volume: 9500},
+		{PriceCents: 500, Volume: 480}, {PriceCents: 500, Bid: true, Volume: 480},
+	}
+	for range 20 {
+		orders = append(orders, Order{PriceCents: 400, Volume: 1}, Order{PriceCents: 400, Bid: true, Volume: 1})
+	}
+	original := slices.Clone(orders)
+	for _, bid := range []bool{false, true} {
+		if cents, volume, ok := DepthPrice(orders, 0, bid); cents != 496 || volume != 10_000 || !ok {
+			t.Errorf("DepthPrice(bid=%t) = %d, %d, %t; want 496, 10000, true", bid, cents, volume, ok)
+		}
+	}
+	got := AnalyzeMarket(orders, 0)
+	if !got.HasBuyDepth || !got.HasSellDepth || got.BuyDepthCents != 497 || got.SellDepthCents != 495 ||
+		got.BuyDepthVolume != 10_000 || got.SellDepthVolume != 10_000 {
+		t.Fatalf("unexpected tick-adjusted depth: %#v", got)
+	}
+	if !slices.Equal(orders, original) {
+		t.Fatal("depth calculation reordered the input")
+	}
+}
+
+func TestDepthPricePartialOrderAndJumpFilter(t *testing.T) {
+	orders := []Order{
+		{PriceCents: 100, Volume: 1, Jumps: 1},
+		{PriceCents: 200, Volume: 40},
+		{PriceCents: 1, Volume: 1000, Jumps: 2},
+	}
+	for _, tc := range []struct {
+		jumps  int
+		price  int64
+		volume int64
+	}{
+		{0, 200, 40},
+		{1, 167, 41},
+	} {
+		if cents, volume, ok := DepthPrice(orders, tc.jumps, false); cents != tc.price || volume != tc.volume || !ok {
+			t.Errorf("DepthPrice(maxJumps=%d) = %d, %d, %t; want %d, %d, true", tc.jumps, cents, volume, ok, tc.price, tc.volume)
+		}
+	}
+}
+
+func TestDepthPriceIgnoresOutlierOrders(t *testing.T) {
+	// A 10M-unit buy at 0.01 ISK and a 10M-unit sell at 97,000,000 ISK would
+	// otherwise swamp the 5% bucket.
+	orders := []Order{
+		{PriceCents: 179_400_000, Bid: true, Volume: 760},
+		{PriceCents: 1, Bid: true, Volume: 10_000_000},
+		{PriceCents: 194_000_000, Volume: 800},
+		{PriceCents: 9_700_000_000, Volume: 10_000_000},
+	}
+	if cents, volume, ok := DepthPrice(orders, 0, true); cents != 179_400_000 || volume != 760 || !ok {
+		t.Errorf("buy depth = %d, %d, %t; want 179400000, 760, true", cents, volume, ok)
+	}
+	if cents, volume, ok := DepthPrice(orders, 0, false); cents != 194_000_000 || volume != 800 || !ok {
+		t.Errorf("sell depth = %d, %d, %t; want 194000000, 800, true", cents, volume, ok)
+	}
+}
+
+func TestDepthPriceVolumeOverflow(t *testing.T) {
+	orders := []Order{{PriceCents: 100, Volume: math.MaxInt64}, {PriceCents: 100, Volume: 1}}
+	if cents, volume, ok := DepthPrice(orders[:1], 0, false); cents != 100 || volume != math.MaxInt64 || !ok {
+		t.Errorf("depth at volume limit = %d, %d, %t; want 100, MaxInt64, true", cents, volume, ok)
+	}
+	if cents, volume, ok := DepthPrice(orders, 0, false); cents != 0 || volume != 0 || ok {
+		t.Errorf("depth with volume overflow = %d, %d, %t; want 0, 0, false", cents, volume, ok)
 	}
 }
 

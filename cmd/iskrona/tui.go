@@ -38,19 +38,26 @@ var isInteractiveTerminal = func() bool {
 }
 
 type marketRelaySnapshot struct {
-	item        string
-	orders      int
-	buyCents    int64
-	sellCents   int64
-	hasBuy      bool
-	hasSell     bool
-	margin      float64
-	broker      float64
-	buyBroker   float64
-	buyLocation string
-	tax         float64
-	copyMode    string
-	maxJumps    int
+	item            string
+	orders          int
+	buyCents        int64
+	sellCents       int64
+	hasBuy          bool
+	hasSell         bool
+	buyDepthCents   int64
+	sellDepthCents  int64
+	buyDepthVolume  int64
+	sellDepthVolume int64
+	hasBuyDepth     bool
+	hasSellDepth    bool
+	margin          float64
+	depthMargin     float64
+	broker          float64
+	buyBroker       float64
+	buyLocation     string
+	tax             float64
+	copyMode        string
+	maxJumps        int
 }
 
 type marketRelayEvent struct {
@@ -262,21 +269,30 @@ func marketRelayFileProcessor(ctx context.Context, runtime *marketRelayRuntime, 
 func marketRelaySnapshotForOrders(item string, orders []Order, c Config) *marketRelaySnapshot {
 	summary := AnalyzeMarket(orders, c.Market.MaxJumps)
 	snapshot := &marketRelaySnapshot{
-		item:        item,
-		orders:      eligibleOrderCount(orders, c.Market.MaxJumps),
-		buyCents:    summary.BuyCents,
-		sellCents:   summary.SellCents,
-		hasBuy:      summary.BestBuy != nil,
-		hasSell:     summary.BestSell != nil,
-		broker:      c.Fees.Broker,
-		buyBroker:   c.Fees.BuyBroker,
-		buyLocation: c.Fees.BuyLocation,
-		tax:         c.Fees.SalesTax,
-		copyMode:    c.Display.CopyMode,
-		maxJumps:    c.Market.MaxJumps,
+		item:            item,
+		orders:          eligibleOrderCount(orders, c.Market.MaxJumps),
+		buyCents:        summary.BuyCents,
+		sellCents:       summary.SellCents,
+		hasBuy:          summary.BestBuy != nil,
+		hasSell:         summary.BestSell != nil,
+		buyDepthCents:   summary.BuyDepthCents,
+		sellDepthCents:  summary.SellDepthCents,
+		buyDepthVolume:  summary.BuyDepthVolume,
+		sellDepthVolume: summary.SellDepthVolume,
+		hasBuyDepth:     summary.HasBuyDepth,
+		hasSellDepth:    summary.HasSellDepth,
+		broker:          c.Fees.Broker,
+		buyBroker:       c.Fees.BuyBroker,
+		buyLocation:     c.Fees.BuyLocation,
+		tax:             c.Fees.SalesTax,
+		copyMode:        c.Display.CopyMode,
+		maxJumps:        c.Market.MaxJumps,
 	}
 	if snapshot.hasBuy && snapshot.hasSell {
 		snapshot.margin = CalculateMargin(snapshot.buyCents, snapshot.sellCents, c.Fees.BuyBroker, c.Fees.Broker, c.Fees.SalesTax, c.Fees.BuyLocation)
+	}
+	if snapshot.hasBuyDepth && snapshot.hasSellDepth {
+		snapshot.depthMargin = CalculateMargin(snapshot.buyDepthCents, snapshot.sellDepthCents, c.Fees.BuyBroker, c.Fees.Broker, c.Fees.SalesTax, c.Fees.BuyLocation)
 	}
 	return snapshot
 }
@@ -376,9 +392,11 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "enter":
 				m.showPalette = false
 				switch m.commandIndex {
-				case 0, 1, 2:
-					side := []string{"sell", "buy", m.config.Display.CopyMode}[m.commandIndex]
-					m.copy(side)
+				case 0, 1:
+					m.copyWith([]string{"sell", "buy"}[m.commandIndex], "best")
+					return m.notify()
+				case 2:
+					m.copy(m.config.Display.CopyMode)
 					return m.notify()
 				case 3, 4:
 					if m.commandIndex == 3 {
@@ -423,10 +441,16 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showHelp = !m.showHelp
 			return m, nil
 		case "y":
-			m.copy("sell")
+			m.copyWith("sell", "best")
 			return m.notify()
 		case "b":
-			m.copy("buy")
+			m.copyWith("buy", "best")
+			return m.notify()
+		case "Y":
+			m.copyWith("sell", "depth")
+			return m.notify()
+		case "B":
+			m.copyWith("buy", "depth")
 			return m.notify()
 		case "c":
 			m.copy(m.config.Display.CopyMode)
@@ -459,7 +483,7 @@ func (m marketRelayModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.recent = m.recent[:5]
 			}
 			if msg.autoCopy {
-				value, label := m.snapshot.copyValue(m.config.Display.CopyMode)
+				value, label := m.snapshot.copyValue(m.config.Display.CopyMode, m.config.Display.CopyPrice)
 				if value > 0 {
 					if err := m.copyPrice(value); err != nil {
 						msg.status, msg.isError = "Clipboard unavailable; market analysis is still ready", true
@@ -513,9 +537,9 @@ func (m *marketRelayModel) adjustMaxJumps(delta int) {
 	m.config = m.runtime.configSnapshot()
 	m.status, m.isError = fmt.Sprintf("Max distance set to %d jumps", next), false
 	if m.snapshot != nil {
-		previous, _ := m.snapshot.copyValue(m.config.Display.CopyMode)
+		previous, _ := m.snapshot.copyValue(m.config.Display.CopyMode, m.config.Display.CopyPrice)
 		m.snapshot = marketRelaySnapshotForOrders(m.snapshot.item, m.orders, m.config)
-		value, _ := m.snapshot.copyValue(m.config.Display.CopyMode)
+		value, _ := m.snapshot.copyValue(m.config.Display.CopyMode, m.config.Display.CopyPrice)
 		if m.clipboardOK && value > 0 && value != previous {
 			if err := m.copyPrice(value); err != nil {
 				m.status, m.isError = "Clipboard unavailable", true
@@ -536,6 +560,10 @@ func (m *marketRelayModel) cycleTheme() {
 }
 
 func (m *marketRelayModel) copy(side string) {
+	m.copyWith(side, m.config.Display.CopyPrice)
+}
+
+func (m *marketRelayModel) copyWith(side, price string) {
 	if m.snapshot == nil {
 		m.status, m.isError = "No market recommendation is available yet", true
 		return
@@ -544,7 +572,7 @@ func (m *marketRelayModel) copy(side string) {
 		m.status, m.isError = "Clipboard unavailable", true
 		return
 	}
-	value, label := m.snapshot.copyValue(side)
+	value, label := m.snapshot.copyValue(side, price)
 	if value == 0 {
 		m.status, m.isError = fmt.Sprintf("No %s recommendation is available", label), true
 		return
@@ -556,9 +584,21 @@ func (m *marketRelayModel) copy(side string) {
 	m.status, m.isError = fmt.Sprintf("%s copied", label), false
 }
 
-func (s *marketRelaySnapshot) copyValue(side string) (int64, string) {
+func (s *marketRelaySnapshot) copyValue(side, price string) (int64, string) {
 	if side == "buy" {
+		if price == "depth" {
+			if !s.hasBuyDepth {
+				return 0, "5% buy price"
+			}
+			return s.buyDepthCents, "5% buy price"
+		}
 		return s.buyCents, "Buy price"
+	}
+	if price == "depth" {
+		if !s.hasSellDepth {
+			return 0, "5% sell price"
+		}
+		return s.sellDepthCents, "5% sell price"
 	}
 	return s.sellCents, "Sell price"
 }
@@ -606,6 +646,7 @@ func (m marketRelayModel) View() string {
 			row("y   Copy sell price", "d   Toggle recent exports"),
 			row("b   Copy buy price", "i   Details (type qty or +/-)"),
 			row("c   Copy configured target", "k   Commands & compact spacing"),
+			row("Y/B Copy 5% sell/buy price", ""),
 			"",
 			styles.heading.Render(row("DISTANCE", "APP")),
 			row("+   Increase distance", "F2  Next theme"),
@@ -705,6 +746,7 @@ func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy b
 		return []string{styles.muted.Render("MARKET WATCH"), "", spin + " Waiting for a new, stable EVE market export…", "", "Export market orders from EVE to begin."}
 	}
 	s := m.snapshot
+	hasDepth := s.hasSellDepth || s.hasBuyDepth
 	margin := "unavailable"
 	if s.hasBuy && s.hasSell {
 		margin = styles.margin(s.margin).Render(fmt.Sprintf("%.2f%%", s.margin))
@@ -713,7 +755,8 @@ func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy b
 	if !m.showRecent || roomy {
 		lines = append(lines, styles.muted.Render(fmt.Sprintf("%d eligible orders · latest stable export", s.orders)))
 	}
-	if roomy && !m.dense {
+	// Keep the profit table visible on 22-row terminals with depth.
+	if roomy && !m.dense && (!hasDepth || m.height > 22) {
 		lines = append(lines, "")
 		if m.height >= 28 {
 			lines = append(lines, "")
@@ -735,15 +778,43 @@ func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy b
 		values += margin
 	}
 	lines = append(lines, labels)
-	if roomy && !m.dense {
+	if roomy && !m.dense && !hasDepth {
 		lines = append(lines, "")
 	}
 	lines = append(lines, values)
 	if !roomy {
-		if !m.dense && !m.showRecent {
+		if !m.dense && !m.showRecent && !hasDepth {
 			lines = append(lines, "")
 		}
 		lines = append(lines, "NET MARGIN  "+margin)
+	}
+	if hasDepth {
+		if !m.dense && (roomy || !m.showRecent) {
+			lines = append(lines, "")
+		}
+		depthValue := func(cents, volume int64, available bool) string {
+			value := m.price(cents, available, styles)
+			if available {
+				value += styles.muted.Render(" · " + FormatDisplayUnits(volume) + " units")
+			}
+			return value
+		}
+		buyLabel := styles.heading.Render("5% DEPTH  [B]")
+		buyValue := depthValue(s.buyDepthCents, s.buyDepthVolume, s.hasBuyDepth)
+		depthMargin := ""
+		if s.hasBuyDepth && s.hasSellDepth {
+			depthMargin = styles.margin(s.depthMargin).Render(fmt.Sprintf("%.2f%%", s.depthMargin))
+		}
+		if roomy && depthMargin != "" {
+			buyLabel = column.Render(buyLabel) + styles.heading.Render("5% MARGIN")
+			buyValue = column.Render(relayClip(buyValue, columnWidth-2)) + depthMargin
+		}
+		lines = append(lines,
+			column.Render(styles.heading.Render("5% DEPTH  [Y]"))+buyLabel,
+			column.Render(relayClip(depthValue(s.sellDepthCents, s.sellDepthVolume, s.hasSellDepth), columnWidth-2))+buyValue)
+		if !roomy && depthMargin != "" {
+			lines = append(lines, "5% MARGIN  "+depthMargin)
+		}
 	}
 	if m.showRecent {
 		if roomy {
@@ -759,7 +830,9 @@ func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy b
 			lines = append(lines, relayClip(recent.item, itemWidth)+"  "+summary)
 		}
 	} else if roomy {
-		lines = append(lines, "")
+		if !hasDepth || m.dense || m.height > 22 {
+			lines = append(lines, "")
+		}
 		if !m.dense && m.height >= 28 {
 			lines = append(lines, "")
 		}
@@ -773,7 +846,11 @@ func (m marketRelayModel) dashboard(styles marketRelayStyles, width int, roomy b
 
 func (m marketRelayModel) autoCopyStatus() string {
 	if m.clipboardOK {
-		return "Auto-copy: " + strings.ToUpper(m.config.Display.CopyMode) + " · clipboard available"
+		kind := "best"
+		if m.config.Display.CopyPrice == "depth" {
+			kind = "5% depth"
+		}
+		return "Auto-copy: " + strings.ToUpper(m.config.Display.CopyMode) + " (" + kind + ") · clipboard available"
 	}
 	return "Auto-copy: DISABLED · clipboard unavailable"
 }
@@ -834,7 +911,7 @@ func (m marketRelayModel) footer(styles marketRelayStyles) string {
 	if m.showPalette || m.showHelp {
 		return styles.footer.Render("[Esc/q] close  [Ctrl+C] quit")
 	}
-	return styles.footer.Render("y sell b buy c target +/- jumps d recent i info k cmd F2 theme ? help q quit")
+	return styles.footer.Render("y sell b buy Y/B 5% c copy +/- jumps d recent i info F2 theme ? help q quit")
 }
 
 type marketRelayStyles struct {

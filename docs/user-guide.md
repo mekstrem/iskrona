@@ -17,9 +17,11 @@ Press `i` to inspect the trade cost breakdown and see how fees affect the result
 In builds that support 5% depth, Market Relay can show a **5% DEPTH** price alongside the best price on each side. The price is the volume-weighted average of the best 5% of eligible units: highest-priced buy orders first and lowest-priced sell orders first, using part of the last order if needed.
 
 - The volume shown is the side's total eligible remaining units, not the size of the 5% slice.
-- The jump limit applies. Buy orders priced below 10% of the best buy and sell orders priced above 10 times the best sell are excluded.
+- The jump limit applies. Buy orders priced below 10% of the best buy and sell orders priced above 10 times the best sell are excluded so very large orders far from the best price don't skew the average.
 - Prices are rounded to a valid EVE tick. When both sides have depth prices, **5% MARGIN** applies the same broker fees and sales tax as **NET MARGIN**.
 - Exports without `volRemaining` still show best prices and omit the depth row.
+
+These figures come from your export and cover only orders within the jump limit. Whole-region figures from services such as EVE Tycoon can differ because they cover more orders and don't round the average to an EVE tick.
 
 ### Update checks
 
@@ -79,6 +81,7 @@ sales_tax = 0.01
 
 [display]
 copy_mode = "sell"
+copy_price = "best"
 color = true
 theme = "default"
 ```
